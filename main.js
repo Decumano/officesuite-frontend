@@ -1,30 +1,3 @@
-// =========Example code from Tauri docs - call to backend=========
-/*
-const { invoke } = window.__TAURI__.core;
-
-let greetInputEl;
-let greetMsgEl;
-
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsgEl.textContent = await invoke("greet", { name: greetInputEl.value });
-}
-
-window.addEventListener("DOMContentLoaded", () => {
-  greetInputEl = document.querySelector("#greet-input");
-  greetMsgEl = document.querySelector("#greet-msg");
-  document.querySelector("#greet-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    greet();
-  });
-});
-*/
-//========================================
-
-// TAURI
-
-const { invoke } = window.__TAURI__.core;
-
 // ── STATE ──
 let files = {};
 let currentFileId = null;
@@ -177,13 +150,7 @@ let slugCounts = {};
 
 async function createDefaultFile()
 {
-  let fileContext = await invoke
-  (
-    "defaultFile",
-    {
-      name: "Decumano"
-    }
-  );
+  let fileContext = await Platform.defaultFile("Decumano");
 
   const file = createFile
   (
@@ -773,7 +740,7 @@ function onGlobalSearch(value)
       {
         try
         {
-          var _r = await invoke('read_work_file', { root: workFolderRoot, relPath: id });
+          var _r = await Platform.readWorkFile(workFolderRoot, id);
           if (files[id]) { files[id].content = _r; files[id].contentLoaded = true; }
         }
         catch(err) {}
@@ -820,7 +787,7 @@ async function loadBacklinksIndex()
   {
     try
     {
-      var raw = await invoke('read_work_file', { root: workFolderRoot, relPath: '_lkbl.json' });
+      var raw = await Platform.readWorkFile(workFolderRoot, '_lkbl.json');
       backlinksIndex = JSON.parse(raw) || {};
     }
     catch(e) { backlinksIndex = {}; }
@@ -836,7 +803,7 @@ async function saveBacklinksIndex()
 {
   if (workFolderRoot)
   {
-    try { await invoke('write_work_file', { root: workFolderRoot, relPath: '_lkbl.json', content: JSON.stringify(backlinksIndex, null, 2) }); }
+    try { await Platform.writeWorkFile(workFolderRoot, '_lkbl.json', JSON.stringify(backlinksIndex, null, 2)); }
     catch(e) {}
   }
   else
@@ -1087,7 +1054,7 @@ function recordFileHistory(id)
 
   if (workFolderRoot)
   {
-    invoke('write_work_file', { root: workFolderRoot, relPath: id + '.history.json', content: JSON.stringify(file.history) })
+    Platform.writeWorkFile(workFolderRoot, id + '.history.json', JSON.stringify(file.history))
       .catch(function(e){ console.warn('History sidecar write error', e); });
   }
   else
@@ -1131,7 +1098,7 @@ async function openHistoryModal()
   {
     try
     {
-      var raw = await invoke('read_work_file', { root: workFolderRoot, relPath: currentFileId + '.history.json' });
+      var raw = await Platform.readWorkFile(workFolderRoot, currentFileId + '.history.json');
       file.history = JSON.parse(raw) || [];
     }
     catch(e)
@@ -1438,7 +1405,7 @@ async function restoreHistoryEntry(index)
 
   if (workFolderRoot)
   {
-    try { await invoke('write_work_file', { root: workFolderRoot, relPath: currentFileId, content: file.content || '' }); }
+    try { await Platform.writeWorkFile(workFolderRoot, currentFileId, file.content || ''); }
     catch(e) { console.warn('Work folder write error', e); }
   }
   else
@@ -1461,7 +1428,7 @@ async function openFile(id)
   {
     try
     {
-      files[id].content       = await invoke('read_work_file', { root: workFolderRoot, relPath: id });
+      files[id].content       = await Platform.readWorkFile(workFolderRoot, id);
       files[id].contentLoaded = true;
     }
     catch(e)
@@ -1522,8 +1489,8 @@ async function deleteFile(e, id)
   {
     try
     {
-      await invoke('delete_work_entry', { root: workFolderRoot, relPath: id, isDir: false });
-      invoke('delete_work_entry', { root: workFolderRoot, relPath: id + '.history.json', isDir: false }).catch(function(){});
+      await Platform.deleteWorkEntry(workFolderRoot, id, false);
+      Platform.deleteWorkEntry(workFolderRoot, id + '.history.json', false).catch(function(){});
     }
     catch(err)
     {
@@ -1563,7 +1530,7 @@ async function deleteFolderEntry(e, path)
 
   try
   {
-    await invoke('delete_work_entry', { root: workFolderRoot, relPath: path, isDir: true });
+    await Platform.deleteWorkEntry(workFolderRoot, path, true);
   }
   catch(err)
   {
@@ -1604,7 +1571,7 @@ async function loadWorkFolderTree()
 
   try
   {
-    entries = await invoke('list_work_folder', { root: workFolderRoot });
+    entries = await Platform.listWorkFolder(workFolderRoot);
   }
   catch(e)
   {
@@ -1665,7 +1632,7 @@ async function createWorkFile(name, type, content)
 
   try
   {
-    await invoke('write_work_file', { root: workFolderRoot, relPath: relPath, content: content !== undefined ? content : defaultContentForType(type) });
+    await Platform.writeWorkFile(workFolderRoot, relPath, content !== undefined ? content : defaultContentForType(type));
   }
   catch(e)
   {
@@ -1706,7 +1673,7 @@ async function persistFileEntry(id)
   {
     try
     {
-      await invoke('move_work_entry', { root: workFolderRoot, fromRelPath: id, toRelPath: desiredRelPath });
+      await Platform.moveWorkEntry(workFolderRoot, id, desiredRelPath);
 
       files[desiredRelPath] = file;
       delete files[id];
@@ -1718,7 +1685,7 @@ async function persistFileEntry(id)
 
       // Best-effort: keep the version-history sidecar attached to the file
       // it documents. Fails quietly if there's no history yet.
-      invoke('move_work_entry', { root: workFolderRoot, fromRelPath: id + '.history.json', toRelPath: desiredRelPath + '.history.json' }).catch(function(){});
+      Platform.moveWorkEntry(workFolderRoot, id + '.history.json', desiredRelPath + '.history.json').catch(function(){});
     }
     catch(e)
     {
@@ -1728,7 +1695,7 @@ async function persistFileEntry(id)
 
   try
   {
-    await invoke('write_work_file', { root: workFolderRoot, relPath: activeId, content: files[activeId].content || '' });
+    await Platform.writeWorkFile(workFolderRoot, activeId, files[activeId].content || '');
     await updateBacklinksForFile(activeId);
   }
   catch(e)
@@ -1762,7 +1729,7 @@ async function renameFolderEntry(path, newName)
 
   try
   {
-    await invoke('move_work_entry', { root: workFolderRoot, fromRelPath: path, toRelPath: desiredRelPath });
+    await Platform.moveWorkEntry(workFolderRoot, path, desiredRelPath);
   }
   catch(e)
   {
@@ -1920,10 +1887,10 @@ async function moveEntryToFolder(id, targetFolderPath)
 
   try
   {
-    await invoke('move_work_entry', { root: workFolderRoot, fromRelPath: id, toRelPath: toRelPath });
+    await Platform.moveWorkEntry(workFolderRoot, id, toRelPath);
 
     if (!isDir)
-      invoke('move_work_entry', { root: workFolderRoot, fromRelPath: id + '.history.json', toRelPath: toRelPath + '.history.json' }).catch(function(){});
+      Platform.moveWorkEntry(workFolderRoot, id + '.history.json', toRelPath + '.history.json').catch(function(){});
   }
   catch(err)
   {
@@ -2054,7 +2021,7 @@ async function contextMenuNewFolder()
 
   try
   {
-    await invoke('create_work_folder', { root: workFolderRoot, relPath: relPath });
+    await Platform.createWorkFolder(workFolderRoot, relPath);
   }
   catch(e)
   {
@@ -3952,7 +3919,7 @@ function openFileLinkModal()
       var f = files[id];
       if ((f.type === 'sheet' || f.type === 'graph') && !f.contentLoaded)
       {
-        invoke('read_work_file', { root: workFolderRoot, relPath: id })
+        Platform.readWorkFile(workFolderRoot, id)
           .then(function(c){ f.content = c; f.contentLoaded = true; })
           .catch(function(){});
       }
@@ -4045,7 +4012,7 @@ async function chooseFileEmbed(fileId)
   {
     try
     {
-      f.content = await invoke('read_work_file', { root: workFolderRoot, relPath: fileId });
+      f.content = await Platform.readWorkFile(workFolderRoot, fileId);
       f.contentLoaded = true;
     }
     catch(e) { console.warn('Could not load file content for embed', e); }
@@ -9722,14 +9689,7 @@ async function exportCurrent()
 
   try
   {
-    var saved = await invoke
-    (
-      "save_file",
-      {
-        name: fileName,
-        content: f.content
-      }
-    );
+    var saved = await Platform.saveFile(fileName, f.content);
 
     if (!saved)
       return;
@@ -10103,7 +10063,7 @@ async function migrateLocalStorageFilesToFolder(root)
 
     try
     {
-      await invoke('write_work_file', { root: root, relPath: candidate, content: f.content || '' });
+      await Platform.writeWorkFile(root, candidate, f.content || '');
     }
     catch(e)
     {
@@ -10118,7 +10078,7 @@ async function chooseWorkFolder()
 
   try
   {
-    picked = await invoke('pick_work_folder');
+    picked = await Platform.pickWorkFolder();
   }
   catch(e)
   {
@@ -10376,14 +10336,7 @@ async function exportCurrentAs(format)
 
   try
   {
-    var saved = await invoke
-    (
-      "save_file",
-      {
-        name: fileName,
-        content: html
-      }
-    );
+    var saved = await Platform.saveFile(fileName, html);
 
     if (!saved)
       return;
@@ -10427,7 +10380,7 @@ function handleImport(e)
 
       try
       {
-        await invoke('write_work_file', { root: workFolderRoot, relPath: relPath, content: content });
+        await Platform.writeWorkFile(workFolderRoot, relPath, content);
       }
       catch(err)
       {
