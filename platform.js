@@ -1,49 +1,113 @@
 // Platform adapter: isolates every native file-system call behind one small
-// interface, so main.js never talks to window.__TAURI__ directly. That keeps
-// this frontend portable to hosts other than Tauri — a host without a native
-// backend just won't get pickWorkFolder() to return a folder, and the app's
-// existing workFolderRoot-gated logic falls back to localStorage-only mode.
+// interface, so main.js never talks to window.__TAURI__ (or the web API)
+// directly. On Tauri, calls go through window.__TAURI__.core.invoke. In this
+// web build, when Tauri isn't present, the same six work-folder methods are
+// backed by fetch() calls to this server's /api/workspace/* endpoints instead
+// of rejecting as "unavailable" — the server derives the workspace root from
+// the logged-in session, so `root` is never actually sent to it.
 
 var Platform = (function () {
   var tauri = window.__TAURI__ && window.__TAURI__.core;
 
-  function unavailable() {
-    return Promise.reject(new Error('No native file-system backend available'));
+  // Sentinel returned by pickWorkFolder() once authenticated: there's no
+  // folder to pick on the web, just an implicit per-user workspace.
+  var CLOUD_ROOT = 'cloud';
+
+  function api(path, options) {
+    options = options || {};
+    options.credentials = 'include';
+    return fetch('/api' + path, options).then(function (res) {
+      if (!res.ok) {
+        return res.json().catch(function () { return {}; }).then(function (body) {
+          throw new Error(body.error || ('Request failed: ' + res.status));
+        });
+      }
+      return res;
+    });
+  }
+
+  function apiJson(path, options) {
+    return api(path, options).then(function (res) { return res.json(); });
   }
 
   function pickWorkFolder() {
-    if (!tauri) return Promise.resolve(null);
-    return tauri.invoke('pick_work_folder');
+    if (tauri) return tauri.invoke('pick_work_folder');
+    return currentUser().then(function (user) {
+      return user ? CLOUD_ROOT : null;
+    });
   }
 
   function listWorkFolder(root) {
-    if (!tauri) return unavailable();
-    return tauri.invoke('list_work_folder', { root: root });
+    if (tauri) return tauri.invoke('list_work_folder', { root: root });
+    return apiJson('/workspace');
   }
 
   function readWorkFile(root, relPath) {
-    if (!tauri) return unavailable();
-    return tauri.invoke('read_work_file', { root: root, relPath: relPath });
+    if (tauri) return tauri.invoke('read_work_file', { root: root, relPath: relPath });
+    return api('/workspace/file?path=' + encodeURIComponent(relPath)).then(function (res) { return res.text(); });
   }
 
   function writeWorkFile(root, relPath, content) {
-    if (!tauri) return unavailable();
-    return tauri.invoke('write_work_file', { root: root, relPath: relPath, content: content });
+    if (tauri) return tauri.invoke('write_work_file', { root: root, relPath: relPath, content: content });
+    return api('/workspace/file?path=' + encodeURIComponent(relPath), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: content
+    }).then(function () { return undefined; });
   }
 
   function createWorkFolder(root, relPath) {
-    if (!tauri) return unavailable();
-    return tauri.invoke('create_work_folder', { root: root, relPath: relPath });
+    if (tauri) return tauri.invoke('create_work_folder', { root: root, relPath: relPath });
+    return api('/workspace/folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ relPath: relPath })
+    }).then(function () { return undefined; });
   }
 
   function deleteWorkEntry(root, relPath, isDir) {
-    if (!tauri) return unavailable();
-    return tauri.invoke('delete_work_entry', { root: root, relPath: relPath, isDir: isDir });
+    if (tauri) return tauri.invoke('delete_work_entry', { root: root, relPath: relPath, isDir: isDir });
+    return api('/workspace/entry?path=' + encodeURIComponent(relPath) + '&isDir=' + !!isDir, {
+      method: 'DELETE'
+    }).then(function () { return undefined; });
   }
 
   function moveWorkEntry(root, fromRelPath, toRelPath) {
-    if (!tauri) return unavailable();
-    return tauri.invoke('move_work_entry', { root: root, fromRelPath: fromRelPath, toRelPath: toRelPath });
+    if (tauri) return tauri.invoke('move_work_entry', { root: root, fromRelPath: fromRelPath, toRelPath: toRelPath });
+    return api('/workspace/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: fromRelPath, to: toRelPath })
+    }).then(function () { return undefined; });
+  }
+
+  // ── Auth (web only; no-ops don't apply to Tauri, which has no accounts) ──
+
+  function currentUser() {
+    if (tauri) return Promise.resolve(null);
+    return fetch('/api/auth/me', { credentials: 'include' }).then(function (res) {
+      return res.ok ? res.json() : null;
+    });
+  }
+
+  function register(email, password) {
+    return apiJson('/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, password: password })
+    });
+  }
+
+  function login(email, password) {
+    return apiJson('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, password: password })
+    });
+  }
+
+  function logout() {
+    return api('/auth/logout', { method: 'POST' }).then(function () { return undefined; });
   }
 
   var DEFAULT_FILE_CONTENT = [
@@ -83,24 +147,45 @@ var Platform = (function () {
     });
   }
 
+  // Triggers a standard browser download of a Blob under the given name.
+  function downloadBlob(name, blob) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   // Saves a one-off exported file. On Tauri this opens a native save dialog;
   // elsewhere it triggers a standard browser download of the same content.
   function saveFile(name, content) {
     if (tauri) return tauri.invoke('save_file', { name: name, content: content });
     try {
-      var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadBlob(name, new Blob([content], { type: 'text/plain;charset=utf-8' }));
       return Promise.resolve(true);
     } catch (e) {
       return Promise.reject(e);
     }
+  }
+
+  // Renders `html` to a PDF server-side (headless Chromium, headers/footers
+  // disabled - see src/export.rs) and downloads the result. Not available on
+  // Tauri, which renders/prints PDFs locally via the print-preview flow instead.
+  function exportPdf(name, html) {
+    if (tauri) return Promise.reject(new Error('exportPdf is web-only'));
+    return api('/export/pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/html;charset=utf-8' },
+      body: html
+    }).then(function (res) {
+      return res.blob();
+    }).then(function (blob) {
+      downloadBlob(name, blob);
+      return true;
+    });
   }
 
   return {
@@ -113,6 +198,11 @@ var Platform = (function () {
     deleteWorkEntry: deleteWorkEntry,
     moveWorkEntry: moveWorkEntry,
     defaultFile: defaultFile,
-    saveFile: saveFile
+    saveFile: saveFile,
+    exportPdf: exportPdf,
+    currentUser: currentUser,
+    register: register,
+    login: login,
+    logout: logout
   };
 })();
