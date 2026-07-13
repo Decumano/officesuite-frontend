@@ -6978,6 +6978,8 @@ async function buildNotebookExportHtml(file)
           mapImg.onerror = reject;
           mapImg.src = page.imageData;
         });
+		
+		ctx.drawImage(mapImg, 0, 0, canvas.width, canvas.height);
       }
       catch(e)
       {
@@ -7044,6 +7046,37 @@ async function buildNotebookExportHtml(file)
       if (line)
         ctx.fillText(line, t.x, y);
     });
+
+    if (page.type === 'map')
+    {
+      (page.pins || []).forEach(function(pin)
+      {
+        const color = pin.color || PIN_COLORS[0],
+              px = pin.x, py = pin.y, r = 9;
+
+        ctx.save();
+        ctx.translate(px, py - r * 2);
+        ctx.beginPath();
+        ctx.moveTo(0, r * 2);
+        ctx.bezierCurveTo(-r * 1.1, r * 0.6, -r, -r * 0.3, 0, -r * 1.1);
+        ctx.bezierCurveTo(r, -r * 0.3, r * 1.1, r * 0.6, 0, r * 2);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+        ctx.lineWidth = 0.5;
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        if (pin.label)
+        {
+          ctx.fillStyle = '#1f2937';
+          ctx.font = '13px sans-serif';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(pin.label, px + r + 4, py - r * 2);
+        }
+      });
+    }
 
     imagesHtml += '<img class="notebook-page" src="' + canvas.toDataURL('image/png') + '" style="display:block;max-width:100%;margin:0 auto 24px;border:1px solid #ddd;">\n';
   }
