@@ -1459,6 +1459,7 @@ html, body
   font-weight: 600;
   cursor: pointer;
 }
+
 .print-preview-panel
 {
   background: var(--bg2);
@@ -1498,6 +1499,7 @@ html, body
   border: none;
   background: #fff;
 }
+
 .modal-type-grid
 {
   display: grid;
