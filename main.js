@@ -6963,7 +6963,28 @@ async function buildNotebookExportHtml(file)
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    if (page.background.type === 'pdf' && data.pdfData && typeof pdfjsLib !== 'undefined')
+    if (page.type === 'map' && page.imageData)
+    {
+      try
+      {
+        await new Promise(function(resolve, reject)
+        {
+          const mapImg = new Image();
+          mapImg.onload = function()
+          {
+            ctx.drawImage(mapImg, 0, 0, canvas.width, canvas.height);
+            resolve();
+          };
+          mapImg.onerror = reject;
+          mapImg.src = page.imageData;
+        });
+      }
+      catch(e)
+      {
+        console.warn('Notebook export map render error', e);
+      }
+    }
+    else if (page.background.type === 'pdf' && data.pdfData && typeof pdfjsLib !== 'undefined')
     {
       try
       {
