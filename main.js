@@ -165,6 +165,39 @@ async function createDefaultFile()
 async function init()
 {
   loadSettings();
+
+  // #link=<token> in the URL is a share link (see initLinkAccess); it works
+  // with or without a logged-in account.
+  var linkToken = null;
+  if (!Platform.isNative)
+  {
+    var lm = (window.location.hash || '').match(/^#link=([0-9a-fA-F-]{36})/);
+    if (lm) linkToken = lm[1];
+  }
+
+  // Web only: surface the desktop-app download page. On Tauri you're already
+  // in the desktop app, so the item stays hidden.
+  if (!Platform.isNative)
+  {
+    var dlItem = document.getElementById('file-menu-download');
+    if (dlItem) dlItem.style.display = '';
+    refreshSharedSection();
+  }
+
+  // Anonymous link visitor: skip the personal-workspace bootstrap entirely —
+  // there is no account, just the linked file/folder.
+  if (linkToken && !(await Platform.currentUser()))
+  {
+    initTheme();
+    applyEnabledTypes();
+    applySidebarCollapse();
+    buildSheet();
+    renderFileList();
+    await initLinkAccess(linkToken);
+    return;
+  }
+
+  await refreshCloudStatus();
   initTheme();
   applyEnabledTypes();
   applySidebarCollapse();
@@ -174,6 +207,7 @@ async function init()
   {
     await loadWorkFolderTree();
     await loadBacklinksIndex();
+    if (linkToken) await initLinkAccess(linkToken);
     return;
   }
 
@@ -181,10 +215,12 @@ async function init()
   await loadBacklinksIndex();
   renderFileList();
 
-  if (Object.keys(files).length === 0)
+  if (Object.keys(files).length === 0 && !linkToken)
   {
     createDefaultFile();
   }
+
+  if (linkToken) await initLinkAccess(linkToken);
 }
 
 function saveToStorage()
@@ -281,6 +317,9 @@ function defaultContentForType(type)
 
   if (type === 'economy')
     return JSON.stringify({ name: 'Economy Notes', currencies: [], exchangeRates: [], tradeGoods: [], regions: [] }, null, 2);
+
+  if (type === 'bestiary')
+    return JSON.stringify({ name: 'My Bestiary', beasts: [] }, null, 2);
 
   return '';
 }
@@ -384,6 +423,15 @@ function fileTypeIcon(type)
               '<line x1="9" y1="12" x2="14" y2="12"/>'+
             '</svg>';
 
+  if (type === 'bestiary')
+    return  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'+
+              '<circle cx="5.5" cy="10" r="1.6"/>'+
+              '<circle cx="9.5" cy="6.5" r="1.6"/>'+
+              '<circle cx="14.5" cy="6.5" r="1.6"/>'+
+              '<circle cx="18.5" cy="10" r="1.6"/>'+
+              '<path d="M12 11c-2.6 0-5.5 2.6-5.5 5a3 3 0 0 0 3 3c1 0 1.7-.5 2.5-.5s1.5.5 2.5.5a3 3 0 0 0 3-3c0-2.4-2.9-5-5.5-5z"/>'+
+            '</svg>';
+
   if (type === 'calendar')
     return  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'+
               '<rect x="3" y="4" width="18" height="18" rx="2"/>'+
@@ -414,6 +462,7 @@ function fileExtensionFor(type)
   if (type === 'glossary') return 'mdl';
   if (type === 'calendar') return 'mdc';
   if (type === 'economy')  return 'mde';
+  if (type === 'bestiary') return 'mdb';
   return 'mdp';
 }
 
@@ -493,6 +542,7 @@ function renderFileList()
   const filesOfType = Object.entries(files).filter(function(entry)
   {
     var f = entry[1];
+    if (entry[0] === SHARED_TMP_ID) return false; // shared files live in their own sidebar section
     if (f.type !== currentAppType) return false;
     if (!_searchQ) return true;
     if (f.name.toLowerCase().indexOf(_searchQ) !== -1) return true;
@@ -587,6 +637,17 @@ function extractSearchableText(id)
   var f = files[id];
   if (!f || !f.content) return '';
   var c = f.content;
+
+  if (f.type === 'bestiary')
+  {
+    try
+    {
+      var bd = JSON.parse(c), bparts = [];
+      (bd.beasts || []).forEach(function(b) { bparts.push(b.name, b.category, b.habitat, b.description); if (b.abilities) bparts = bparts.concat(b.abilities); });
+      return bparts.filter(Boolean).join(' ');
+    }
+    catch(e) { return ''; }
+  }
 
   if (f.type === 'glossary')
   {
@@ -1030,6 +1091,10 @@ function recordFileHistory(id)
   if (!file)
     return;
 
+  // Shared files aren't ours: no history sidecar in someone else's workspace.
+  if (id === SHARED_TMP_ID)
+    return;
+
   var content = file.content || '';
 
   if (!file.history)
@@ -1292,11 +1357,11 @@ function computeWordDiff(oldText, newText)
   return ops;
 }
 
-function renderWordDiff(oldText, newText)
+function renderWordDiff(oldText, newText, oldPaneId, newPaneId)
 {
   var ops = computeWordDiff(oldText, newText),
-      oldPane = document.getElementById('diff-old-pane'),
-      newPane = document.getElementById('diff-new-pane');
+      oldPane = document.getElementById(oldPaneId || 'diff-old-pane'),
+      newPane = document.getElementById(newPaneId || 'diff-new-pane');
 
   if (!ops)
   {
@@ -1419,7 +1484,10 @@ async function openFile(id)
   if (!files[id])
     return;
 
-  if (currentFileId && currentFileId !== id)
+  if (id !== SHARED_TMP_ID)
+    exitSharedMode();
+
+  if (currentFileId && currentFileId !== id && currentFileId !== SHARED_TMP_ID)
     recordFileHistory(currentFileId);
 
   currentFileId = id;
@@ -1462,8 +1530,13 @@ async function openFile(id)
   else if (file.type === 'economy')
     loadEconomyFile(file);
 
+  else if (file.type === 'bestiary')
+    loadBestiaryFile(file);
+
   else
     loadSheetFile(file);
+
+  updateCommentsUI();
 
   // Fire-and-forget: update the shared backlinks index whenever a file is opened
   updateBacklinksForFile(id);
@@ -1594,10 +1667,16 @@ async function loadWorkFolderTree()
         return;
       }
 
+      // Sync sidecars (e.g. the _lktpl.json custom-templates store) are in
+      // the server listing so the desktop app can sync them, but they aren't
+      // documents — keep them out of the file tree.
+      if (/\.json$/i.test(entry.name))
+        return;
+
       const dot = entry.name.lastIndexOf('.'),
             ext = (dot === -1) ? '' : entry.name.slice(dot + 1).toLowerCase(),
             baseName = (dot === -1) ? entry.name : entry.name.slice(0, dot),
-            type = ext === 'mds' ? 'sheet' : ext === 'mdg' ? 'graph' : ext === 'mdn' ? 'notebook' : ext === 'mdl' ? 'glossary' : ext === 'mdc' ? 'calendar' : ext === 'mde' ? 'economy' : 'doc',
+            type = ext === 'mds' ? 'sheet' : ext === 'mdg' ? 'graph' : ext === 'mdn' ? 'notebook' : ext === 'mdl' ? 'glossary' : ext === 'mdc' ? 'calendar' : ext === 'mde' ? 'economy' : ext === 'mdb' ? 'bestiary' : 'doc',
             kept = preserved[entry.relPath];
 
       newFiles[entry.relPath] =
@@ -1654,6 +1733,24 @@ async function persistFileEntry(id)
 {
   if (!files[id])
     return;
+
+  // Files opened from "Shared with me" never touch my own workspace: they're
+  // written back through the share (edit permission) or not at all.
+  if (id === SHARED_TMP_ID)
+  {
+    if (sharedCtx && sharedCtx.permission === 'edit')
+    {
+      try
+      {
+        if (sharedCtx.link)
+          await Platform.writeLinkFile(sharedCtx.link, sharedCtx.subPath, files[id].content || '');
+        else
+          await Platform.writeSharedFile(sharedCtx.shareId, sharedCtx.subPath, files[id].content || '');
+      }
+      catch(e) { console.warn('Shared write error', e); }
+    }
+    return;
+  }
 
   if (!workFolderRoot)
   {
@@ -1980,6 +2077,10 @@ function renderContextMenu()
 
   let html = '<button class="file-menu-item" onclick="contextMenuNewFolder()">New Folder</button>';
 
+  if (t.kind !== 'root' && !Platform.isNative)
+    html += '<div class="file-menu-divider"></div>' +
+            '<button class="file-menu-item" onclick="openShareModal()">Share&hellip;</button>';
+
   if (t.kind !== 'root')
   {
     const currentParent = (t.kind === 'folder') ? folders[t.id].parent : files[t.id].folder;
@@ -2063,6 +2164,7 @@ function switchAppType(type, rerender)
   document.getElementById('glossary-app').style.display = (type === 'glossary') ? 'flex' : 'none';
   document.getElementById('calendar-app').style.display = (type === 'calendar') ? 'flex' : 'none';
   document.getElementById('economy-app').style.display  = (type === 'economy')  ? 'flex' : 'none';
+  document.getElementById('bestiary-app').style.display = (type === 'bestiary') ? 'flex' : 'none';
 
   document.querySelectorAll('.app-tab').forEach
   (
@@ -2129,7 +2231,7 @@ function loadGlossaryFile(file)
 
 function saveGlossaryData()
 {
-  if (!currentFileId || !files[currentFileId]) return;
+  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'glossary') return;
   glsData.name = document.getElementById('glossary-title-input').value.trim() || glsData.name || 'Glossary';
   files[currentFileId].name     = glsData.name;
   files[currentFileId].content  = JSON.stringify(glsData, null, 2);
@@ -2320,6 +2422,140 @@ function deleteGlossaryRoot(e, id)
   saveGlossaryData(); renderGlossaryRoots();
 }
 
+// ── BESTIARY ──
+
+var bstData  = null;
+var bstQuery = '';
+
+var BST_DANGER_LABELS = ['Harmless', 'Low', 'Moderate', 'High', 'Deadly'];
+var BST_DANGER_COLORS = ['#2ecc71', '#a3c94a', '#f1c40f', '#e67e22', '#e74c3c'];
+
+function loadBestiaryFile(file)
+{
+  try { bstData = JSON.parse(file.content || '{}'); }
+  catch(e) { bstData = {}; }
+  if (!bstData.beasts) bstData.beasts = [];
+  document.getElementById('bestiary-title-input').value = bstData.name || file.name || '';
+  bstQuery = '';
+  document.getElementById('bst-search').value = '';
+  renderBestiary();
+}
+
+function saveBestiaryData()
+{
+  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'bestiary') return;
+  bstData.name = document.getElementById('bestiary-title-input').value.trim() || bstData.name || 'Bestiary';
+  files[currentFileId].name     = bstData.name;
+  files[currentFileId].content  = JSON.stringify(bstData, null, 2);
+  files[currentFileId].modified = Date.now();
+  scheduleSave();
+  renderFileList();
+}
+
+function onBestiaryTitleChange() { saveBestiaryData(); }
+
+function onBestiarySearch(q) { bstQuery = q; renderBestiary(); }
+
+function bstDangerBadge(level)
+{
+  var idx = Math.min(Math.max((level|0) - 1, 0), 4);
+  var color = BST_DANGER_COLORS[idx];
+  return '<span class="bst-danger" style="background:' + color + '22;color:' + color + ';border-color:' + color + '55" title="Danger: ' + BST_DANGER_LABELS[idx] + '">' +
+    '&#9679;'.repeat(idx + 1) + '<span class="bst-danger-label">' + BST_DANGER_LABELS[idx] + '</span></span>';
+}
+
+function renderBestiary()
+{
+  var q = bstQuery.toLowerCase();
+  var beasts = (bstData.beasts || [])
+    .filter(function(b){
+      return !q || (b.name||'').toLowerCase().includes(q) ||
+             (b.category||'').toLowerCase().includes(q) ||
+             (b.habitat||'').toLowerCase().includes(q) ||
+             (b.description||'').toLowerCase().includes(q) ||
+             (b.abilities||[]).some(function(a){ return a.toLowerCase().includes(q); });
+    })
+    .sort(function(a, b){ return (a.name||'').localeCompare(b.name||''); });
+
+  document.getElementById('bst-empty').style.display = beasts.length ? 'none' : '';
+
+  // Group by category so related creatures sit together.
+  var groups = {};
+  beasts.forEach(function(b){
+    var cat = (b.category||'').trim() || 'Uncategorised';
+    (groups[cat] = groups[cat] || []).push(b);
+  });
+
+  document.getElementById('bst-body').innerHTML = Object.keys(groups).sort().map(function(cat){
+    var cc = glsLangColor(cat);
+    return '<div class="gls-letter-group">' +
+      '<div class="gls-letter-divider" style="color:' + cc + '">' + escHtml(cat) + '</div>' +
+      groups[cat].map(function(b){
+        var abilities = (b.abilities||[]).map(function(a){ return '<span class="gls-tag">' + escHtml(a) + '</span>'; }).join('');
+        return '<div class="bst-card" onclick="openBeastModal(\'' + b.id + '\')">' +
+          '<div class="bst-card-head">' +
+            '<div class="bst-name">' + escHtml(b.name||'') + '</div>' +
+            bstDangerBadge(b.danger || 1) +
+            (b.habitat ? '<span class="bst-habitat" title="Habitat">' + escHtml(b.habitat) + '</span>' : '') +
+          '</div>' +
+          (b.description ? '<div class="bst-desc">' + escHtml(b.description) + '</div>' : '') +
+          (abilities ? '<div class="bst-abilities">' + abilities + '</div>' : '') +
+          '<button class="gls-card-del" onclick="deleteBeast(event,\'' + b.id + '\')">×</button>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+  }).join('');
+}
+
+function openBeastModal(id)
+{
+  var b = id ? (bstData.beasts||[]).find(function(x){ return x.id === id; }) : null;
+  var danger = (b||{}).danger || 1;
+  var f =
+    '<div class="dem-grid">' +
+      '<label class="field-label">Name<input class="modal-input" id="bef-name" value="' + escAttr((b||{}).name||'') + '" placeholder="Creature name"></label>' +
+      '<label class="field-label">Category<input class="modal-input" id="bef-cat" value="' + escAttr((b||{}).category||'') + '" placeholder="e.g. Dragon, Undead, Fey…"></label>' +
+    '</div>' +
+    '<div class="dem-grid" style="margin-top:8px">' +
+      '<label class="field-label">Danger level<select class="modal-input tb-select" id="bef-danger">' +
+        BST_DANGER_LABELS.map(function(lbl, i){
+          return '<option value="' + (i + 1) + '"' + (danger === i + 1 ? ' selected' : '') + '>' + (i + 1) + ' — ' + lbl + '</option>';
+        }).join('') +
+      '</select></label>' +
+      '<label class="field-label">Habitat<input class="modal-input" id="bef-habitat" value="' + escAttr((b||{}).habitat||'') + '" placeholder="Where it lives…"></label>' +
+    '</div>' +
+    '<label class="field-label" style="margin-top:8px">Description<textarea class="modal-input" id="bef-desc" rows="4" placeholder="Appearance, behaviour, lore…">' + escHtml((b||{}).description||'') + '</textarea></label>' +
+    '<label class="field-label" style="margin-top:8px">Abilities <span style="color:var(--text3);font-weight:400">(comma separated)</span><input class="modal-input" id="bef-abilities" value="' + escAttr(((b||{}).abilities||[]).join(', ')) + '" placeholder="e.g. Fire breath, Flight…"></label>';
+
+  openDataModal(id ? 'Edit beast' : 'Add beast', f, function()
+  {
+    var beast = {
+      id:          id || genId(),
+      name:        document.getElementById('bef-name').value.trim(),
+      category:    document.getElementById('bef-cat').value.trim(),
+      danger:      parseInt(document.getElementById('bef-danger').value, 10) || 1,
+      habitat:     document.getElementById('bef-habitat').value.trim(),
+      description: document.getElementById('bef-desc').value.trim(),
+      abilities:   document.getElementById('bef-abilities').value.split(',').map(function(t){ return t.trim(); }).filter(Boolean)
+    };
+    if (!beast.name) return;
+    if (id)
+      bstData.beasts = bstData.beasts.map(function(x){ return x.id === id ? beast : x; });
+    else
+      bstData.beasts.push(beast);
+    closeDataModal();
+    saveBestiaryData();
+    renderBestiary();
+  });
+}
+
+function deleteBeast(e, id)
+{
+  e.stopPropagation();
+  bstData.beasts = (bstData.beasts||[]).filter(function(x){ return x.id !== id; });
+  saveBestiaryData(); renderBestiary();
+}
+
 // ── CALENDAR ──
 
 var calData = null;
@@ -2345,7 +2581,7 @@ function loadCalendarFile(file)
 
 function saveCalendarData()
 {
-  if (!currentFileId || !files[currentFileId]) return;
+  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'calendar') return;
   calData.name = document.getElementById('calendar-title-input').value.trim() || calData.name || 'Calendar';
   files[currentFileId].name     = calData.name;
   files[currentFileId].content  = JSON.stringify(calData, null, 2);
@@ -2754,7 +2990,7 @@ function loadEconomyFile(file)
 
 function saveEconomyData()
 {
-  if (!currentFileId || !files[currentFileId]) return;
+  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'economy') return;
   ecoData.name = document.getElementById('economy-title-input').value.trim() || ecoData.name || 'Economy';
   files[currentFileId].name     = ecoData.name;
   files[currentFileId].content  = JSON.stringify(ecoData, null, 2);
@@ -3103,7 +3339,7 @@ function onDocTitleChange()
 
 function onEditorChange()
 {
-  if (!currentFileId)
+  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'doc')
     return;
 
   files[currentFileId].content = document.getElementById('editor').value;
@@ -4534,7 +4770,7 @@ function onGraphTitleChange()
 
 function onGraphEditorChange()
 {
-  if (!currentFileId)
+  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'graph')
     return;
 
   files[currentFileId].content = document.getElementById('graph-editor').value;
@@ -4890,7 +5126,7 @@ function onNotebookTitleChange()
 
 function commitNotebookChange()
 {
-  if (!currentFileId || !nbData)
+  if (!currentFileId || !nbData || !files[currentFileId] || files[currentFileId].type !== 'notebook')
     return;
 
   files[currentFileId].content = serializeNotebookData(nbData);
@@ -8912,7 +9148,10 @@ function sheetRedo()
 
 function saveSheetToFile()
 {
-  if(!currentFileId)
+  // The grid is always live even when no spreadsheet is open, so without the
+  // type check an empty sheet would serialize itself over whatever file
+  // happens to be current (e.g. the document opened before switching tabs).
+  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'sheet')
     return;
 
   var out = '---\ntype: spreadsheet\n---\n\n';
@@ -9642,6 +9881,11 @@ function openNewModal()
     c.classList.toggle('selected', c.dataset.tpl === 'blank');
   });
 
+  // Re-read the template store every time: another device may have synced
+  // new templates since the last look.
+  customTemplates = null;
+  loadCustomTemplates().then(renderDocTemplateRow);
+
   setTimeout
   (
     function()
@@ -9690,12 +9934,137 @@ function selectDocTemplate(tpl, el)
   el.classList.add('selected');
 }
 
+// ── CUSTOM TEMPLATES ──
+// User-made document templates, alongside the built-in DOC_TEMPLATES. Stored
+// as a `_lktpl.json` sidecar in the work folder (same pattern as the
+// `_lkbl.json` backlinks index, so it works on web and desktop alike and
+// never shows up in the file tree), or localStorage when no folder is open.
+
+var customTemplates = null; // { name: content }, lazily loaded
+var customTplKeys = [];     // sorted names; template ids are 'custom:<index>'
+
+async function loadCustomTemplates()
+{
+  if (customTemplates !== null)
+    return customTemplates;
+
+  if (workFolderRoot)
+  {
+    try { customTemplates = JSON.parse(await Platform.readWorkFile(workFolderRoot, '_lktpl.json')) || {}; }
+    catch(e) { customTemplates = {}; }
+  }
+  else
+  {
+    try { customTemplates = JSON.parse(localStorage.getItem('lk_custom_templates')) || {}; }
+    catch(e) { customTemplates = {}; }
+  }
+  return customTemplates;
+}
+
+async function persistCustomTemplates()
+{
+  if (workFolderRoot)
+  {
+    try { await Platform.writeWorkFile(workFolderRoot, '_lktpl.json', JSON.stringify(customTemplates, null, 2)); }
+    catch(e) { console.warn('Template store write error', e); }
+  }
+  else
+  {
+    try { localStorage.setItem('lk_custom_templates', JSON.stringify(customTemplates)); }
+    catch(e) { console.warn('Template store write error', e); }
+  }
+}
+
+function renderDocTemplateRow()
+{
+  var grid = document.querySelector('#doc-template-row .doc-tpl-grid');
+  if (!grid) return;
+
+  grid.querySelectorAll('.doc-tpl-custom').forEach(function(c){ c.remove(); });
+
+  customTplKeys = Object.keys(customTemplates || {}).sort(function(a, b){ return a.localeCompare(b); });
+  customTplKeys.forEach(function(name, i)
+  {
+    var card = document.createElement('div');
+    card.className = 'doc-tpl-card doc-tpl-custom';
+    card.dataset.tpl = 'custom:' + i;
+    card.title = name;
+    card.appendChild(document.createTextNode(name));
+    card.onclick = function(){ selectDocTemplate('custom:' + i, card); };
+
+    var del = document.createElement('button');
+    del.className = 'doc-tpl-del';
+    del.title = 'Delete this template';
+    del.textContent = '×';
+    del.onclick = function(ev){ deleteCustomTemplate(ev, name); };
+    card.appendChild(del);
+
+    grid.appendChild(card);
+  });
+}
+
+async function deleteCustomTemplate(ev, name)
+{
+  ev.stopPropagation();
+  delete customTemplates[name];
+  await persistCustomTemplates();
+
+  // If the deleted template was selected, fall back to Blank.
+  if (newDocTemplate.indexOf('custom:') === 0 && customTplKeys[parseInt(newDocTemplate.slice(7), 10)] === name)
+  {
+    newDocTemplate = 'blank';
+    document.querySelectorAll('.doc-tpl-card').forEach(function(c)
+    {
+      c.classList.toggle('selected', c.dataset.tpl === 'blank');
+    });
+  }
+  renderDocTemplateRow();
+}
+
+function customTemplateContent(tplId)
+{
+  var name = customTplKeys[parseInt(tplId.slice(7), 10)];
+  return name !== undefined ? (customTemplates || {})[name] : undefined;
+}
+
+function handleFileMenuSaveTemplate()
+{
+  closeFileMenu();
+
+  var f = currentFileId && files[currentFileId];
+  if (!f || f.type !== 'doc')
+  {
+    alert('Open a Document first — templates are created from the currently open Document.');
+    return;
+  }
+
+  openDataModal
+  (
+    'Save as template',
+    '<label class="field-label">Template name<input class="modal-input" id="tpl-name" value="' + escAttr(f.name || 'My template') + '"></label>' +
+    '<div style="color:var(--text3);font-size:12px;margin-top:8px">The current contents of &ldquo;' + escHtml(f.name) + '&rdquo; will appear as a template choice in the New File dialog. Saving under an existing name replaces that template.</div>',
+    async function()
+    {
+      var name = document.getElementById('tpl-name').value.trim();
+      if (!name) return;
+      await loadCustomTemplates();
+      customTemplates[name] = f.content || '';
+      await persistCustomTemplates();
+      closeDataModal();
+    }
+  );
+}
+
 async function createNewFile()
 {
   var name = document.getElementById('new-name').value.trim() || 'Untitled';
-  var tplContent = (newFileType === 'doc' && newDocTemplate !== 'blank')
-                   ? (DOC_TEMPLATES[newDocTemplate] || undefined)
-                   : undefined;
+  var tplContent;
+  if (newFileType === 'doc' && newDocTemplate !== 'blank')
+  {
+    tplContent = newDocTemplate.indexOf('custom:') === 0
+                 ? customTemplateContent(newDocTemplate)
+                 : (DOC_TEMPLATES[newDocTemplate] || undefined);
+  }
 
   closeNewModal();
 
@@ -9844,7 +10213,7 @@ function handleFileMenuSettings()
 // ── ENABLED TYPES ──
 
 var enabledTypes = null;
-var ALL_APP_TYPES = ['doc','sheet','graph','notebook','glossary','calendar','economy'];
+var ALL_APP_TYPES = ['doc','sheet','graph','notebook','glossary','calendar','economy','bestiary'];
 
 function getEnabledTypes()
 {
@@ -10051,6 +10420,7 @@ function openSettingsModal()
 {
   renderSettingsModal();
   document.getElementById('settings-modal').classList.add('open');
+  refreshCloudStatus();
 }
 
 function closeSettingsModal()
@@ -10058,7 +10428,7 @@ function closeSettingsModal()
   document.getElementById('settings-modal').classList.remove('open');
 }
 
-var TYPE_LABELS = { doc:'Documents', sheet:'Sheets', graph:'Diagrams', notebook:'Notebook / Maps', glossary:'Glossary', calendar:'Calendar', economy:'Economy' };
+var TYPE_LABELS = { doc:'Documents', sheet:'Sheets', graph:'Diagrams', notebook:'Notebook / Maps', glossary:'Glossary', calendar:'Calendar', economy:'Economy', bestiary:'Bestiary' };
 
 function renderSettingsModal()
 {
@@ -10077,6 +10447,7 @@ function renderSettingsModal()
   }).join('');
 
   renderThemeSection();
+  renderCloudSyncSection();
 }
 
 document.getElementById('settings-modal').addEventListener
@@ -10170,6 +10541,224 @@ function stopUsingWorkFolder()
   loadFromStorage();
   renderFileList();
   renderSettingsModal();
+}
+
+// ── CLOUD SYNC (desktop only) ──
+// Connects the active work folder to an officesuite-web server via the
+// Tauri-only cloud* commands (platform.js -> src-tauri/src/cloud.rs). The web
+// build already talks to the cloud natively through Platform's work-folder
+// calls and has no separate "connect" concept, so this whole section stays
+// hidden there (Platform.isNative is false).
+
+var cloudStatusCache = { connected: false };
+var syncConflicts = [];
+var activeSyncConflict = null;
+
+async function refreshCloudStatus()
+{
+  if (!Platform.isNative)
+    return;
+
+  try { cloudStatusCache = await Platform.cloudStatus(); }
+  catch(e) { cloudStatusCache = { connected: false }; }
+
+  renderCloudSyncSection();
+}
+
+function renderCloudSyncSection()
+{
+  var section = document.getElementById('cloud-sync-section');
+
+  if (!section)
+    return;
+
+  if (!Platform.isNative)
+  {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = '';
+
+  var needsFolderEl = document.getElementById('cloud-sync-needs-folder'),
+      disconnectedEl = document.getElementById('cloud-sync-disconnected'),
+      connectedEl = document.getElementById('cloud-sync-connected');
+
+  if (!workFolderRoot)
+  {
+    needsFolderEl.style.display = '';
+    disconnectedEl.style.display = 'none';
+    connectedEl.style.display = 'none';
+    return;
+  }
+
+  needsFolderEl.style.display = 'none';
+
+  if (!cloudStatusCache.connected)
+  {
+    disconnectedEl.style.display = '';
+    connectedEl.style.display = 'none';
+    return;
+  }
+
+  disconnectedEl.style.display = 'none';
+  connectedEl.style.display = '';
+
+  var statusEl = document.getElementById('cloud-sync-status'),
+      conflictsBtn = document.getElementById('cloud-conflicts-btn');
+
+  var when = cloudStatusCache.lastSyncedAt ? new Date(cloudStatusCache.lastSyncedAt).toLocaleString() : 'not yet';
+  statusEl.textContent = 'Syncing with ' + cloudStatusCache.serverUrl + ' as ' + cloudStatusCache.email + '. Last synced: ' + when + '.';
+
+  if (cloudStatusCache.conflictCount > 0)
+  {
+    conflictsBtn.style.display = '';
+    conflictsBtn.textContent = 'View conflicts (' + cloudStatusCache.conflictCount + ')';
+  }
+  else
+  {
+    conflictsBtn.style.display = 'none';
+  }
+}
+
+async function connectCloud()
+{
+  var serverUrl = document.getElementById('cloud-server-url').value.trim(),
+      email = document.getElementById('cloud-email').value.trim(),
+      password = document.getElementById('cloud-password').value;
+
+  if (!serverUrl || !email || !password)
+  {
+    alert('Enter a server URL, email, and password.');
+    return;
+  }
+
+  if (!workFolderRoot)
+  {
+    alert('Choose a work folder first — that folder becomes the sync target.');
+    return;
+  }
+
+  try
+  {
+    cloudStatusCache = await Platform.cloudConnect(serverUrl, email, password, workFolderRoot);
+    document.getElementById('cloud-password').value = '';
+    renderSettingsModal();
+    await loadWorkFolderTree();
+  }
+  catch(e)
+  {
+    alert('Could not connect: ' + e.message);
+  }
+}
+
+async function disconnectCloud()
+{
+  try { await Platform.cloudDisconnect(); }
+  catch(e) { console.warn('Cloud disconnect error', e); }
+
+  cloudStatusCache = { connected: false };
+  renderCloudSyncSection();
+}
+
+async function syncNowCloud()
+{
+  try
+  {
+    cloudStatusCache = await Platform.cloudSyncNow();
+    renderCloudSyncSection();
+    await loadWorkFolderTree();
+  }
+  catch(e)
+  {
+    alert('Sync failed: ' + e.message);
+  }
+}
+
+// ── Sync Conflicts modal ──
+// Each conflict is a file both sides edited since the last sync in ways that
+// couldn't be auto-merged (see three_way_merge in cloud.rs). The user picks
+// which version wins, or keeps both as separate files.
+
+async function openSyncConflictsModal()
+{
+  try { syncConflicts = await Platform.cloudListConflicts(); }
+  catch(e) { syncConflicts = []; }
+
+  renderSyncConflictsModal();
+  document.getElementById('sync-conflicts-modal').classList.add('open');
+}
+
+function closeSyncConflictsModal()
+{
+  document.getElementById('sync-conflicts-modal').classList.remove('open');
+}
+
+function renderSyncConflictsModal()
+{
+  var list = document.getElementById('sync-conflicts-list');
+
+  if (!syncConflicts.length)
+  {
+    list.innerHTML = '<div class="history-empty">No conflicts — everything is synced.</div>';
+    return;
+  }
+
+  list.innerHTML = syncConflicts.map(function(c, i)
+  {
+    return '<div class="history-item">' +
+             '<div class="history-item-info">' +
+               '<div class="history-item-time">' + escHtml(c.relPath) + '</div>' +
+               '<div class="history-item-preview">Both your device and the cloud changed this file since the last sync.</div>' +
+             '</div>' +
+             '<div class="history-item-actions">' +
+               '<button type="button" class="btn-cancel history-compare-btn" onclick="openSyncConflictDiff(' + i + ')">Review</button>' +
+             '</div>' +
+           '</div>';
+  }).join('');
+}
+
+function openSyncConflictDiff(index)
+{
+  activeSyncConflict = syncConflicts[index];
+
+  if (!activeSyncConflict)
+    return;
+
+  document.getElementById('sync-conflict-diff-title').textContent = activeSyncConflict.relPath;
+  renderWordDiff(activeSyncConflict.localContent, activeSyncConflict.remoteContent, 'sync-conflict-local-pane', 'sync-conflict-remote-pane');
+
+  closeSyncConflictsModal();
+  document.getElementById('sync-conflict-diff-modal').classList.add('open');
+}
+
+function closeSyncConflictDiffModal()
+{
+  document.getElementById('sync-conflict-diff-modal').classList.remove('open');
+  document.getElementById('sync-conflicts-modal').classList.add('open');
+}
+
+async function resolveSyncConflict(choice)
+{
+  if (!activeSyncConflict)
+    return;
+
+  try
+  {
+    await Platform.cloudResolveConflict(activeSyncConflict.relPath, choice);
+  }
+  catch(e)
+  {
+    alert('Could not resolve conflict: ' + e.message);
+    return;
+  }
+
+  document.getElementById('sync-conflict-diff-modal').classList.remove('open');
+  activeSyncConflict = null;
+
+  await refreshCloudStatus();
+  await openSyncConflictsModal();
+  await loadWorkFolderTree();
 }
 
 // Wraps rendered body markup (doc HTML or a sheet table) into a standalone,
@@ -10450,6 +11039,7 @@ function handleImport(e)
               : file.name.endsWith('.mdl') ? 'glossary'
               : file.name.endsWith('.mdc') ? 'calendar'
               : file.name.endsWith('.mde') ? 'economy'
+              : file.name.endsWith('.mdb') ? 'bestiary'
               : 'doc';
 
     var name = file.name.replace(/\.[^.]+$/,'');
@@ -10500,6 +11090,557 @@ function escHtml(s)
 function escAttr(s)
 {
   return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+}
+
+
+// ── SHARING & COMMENTS (web only) ──────────────────────────
+// Files/folders can be shared with other accounts at view/comment/edit level
+// (server: officesuite-web src/share.rs). Shared entries appear in their own
+// sidebar section; opening one loads it into the normal editors under the
+// reserved id SHARED_TMP_ID, so it never mixes with the user's own workspace
+// files. Saves are routed through the share (edit permission) or dropped.
+
+var SHARED_TMP_ID = '@shared';
+var sharedCtx = null;              // { shareId, subPath, permission, ownerEmail } while a shared file is open
+var sharedEntries = [];            // GET /api/shared result
+var sharedChildren = {};           // shareId -> FsEntry[] (folder shares, lazily fetched)
+var sharedExpanded = {};           // shareId -> bool
+var sharedRegistry = {};           // rowKey -> openable file descriptor
+var sharedCollapsed = false;
+
+function typeForFileName(name)
+{
+  var n = (name || '').toLowerCase();
+  return n.endsWith('.mds') ? 'sheet'
+       : n.endsWith('.mdg') ? 'graph'
+       : n.endsWith('.mdn') ? 'notebook'
+       : n.endsWith('.mdl') ? 'glossary'
+       : n.endsWith('.mdc') ? 'calendar'
+       : n.endsWith('.mde') ? 'economy'
+       : n.endsWith('.mdb') ? 'bestiary'
+       : 'doc';
+}
+
+var SHARE_PERM_COLORS = { view: '#9ca3af', comment: '#f1c40f', edit: '#2ecc71' };
+function sharePermBadge(perm)
+{
+  var c = SHARE_PERM_COLORS[perm] || '#9ca3af';
+  return '<span class="share-perm-badge" style="background:' + c + '22;color:' + c + ';border-color:' + c + '55">' + escHtml(perm) + '</span>';
+}
+
+async function refreshSharedSection()
+{
+  if (Platform.isNative) return;
+  var fetched;
+  try { fetched = await Platform.listSharedWithMe(); }
+  catch(e) { fetched = []; }
+  // Link entries (from a #link= URL) aren't in the account's share list; keep
+  // them across refreshes. Captured after the await so an entry added while
+  // the request was in flight isn't lost.
+  var linkEntries = sharedEntries.filter(function(s){ return s.link; });
+  sharedEntries = fetched.concat(linkEntries);
+  renderSharedSection();
+}
+
+function sharedEntryId(s) { return s.shareId || ('link:' + s.link); }
+
+function toggleSharedSection()
+{
+  sharedCollapsed = !sharedCollapsed;
+  renderSharedSection();
+}
+
+function sharedFileRowHtml(key, name, ownerLabel, permission, depth)
+{
+  var type = typeForFileName(name);
+  return '<div class="file-item shared-row" style="padding-left:' + (10 + depth * 14) + 'px" onclick="openSharedRegistry(\'' + escAttr(key) + '\')">' +
+    '<span class="file-icon">' + fileTypeIcon(type) + '</span>' +
+    '<span class="file-name" title="' + escAttr(ownerLabel) + '">' + escHtml(name.replace(/\.[^.]+$/, '')) + '</span>' +
+    sharePermBadge(permission) +
+  '</div>';
+}
+
+function renderSharedSection()
+{
+  var header = document.getElementById('shared-section-header'),
+      list   = document.getElementById('shared-list');
+  if (!header || !list) return;
+
+  if (!sharedEntries.length)
+  {
+    header.style.display = 'none';
+    list.style.display = 'none';
+    return;
+  }
+
+  header.style.display = '';
+  document.getElementById('shared-section-chevron').textContent = sharedCollapsed ? '▸' : '▾';
+  list.style.display = sharedCollapsed ? 'none' : '';
+  if (sharedCollapsed) return;
+
+  sharedRegistry = {};
+  var html = '';
+
+  sharedEntries.forEach(function(s)
+  {
+    var id = sharedEntryId(s);
+    var ownerLabel = s.link ? 'Shared via link by ' + s.ownerEmail : 'Shared by ' + s.ownerEmail;
+
+    if (!s.exists)
+    {
+      html += '<div class="file-item shared-row shared-gone" title="The owner removed or moved this">' +
+        '<span class="file-name">' + escHtml(s.name) + '</span>' +
+        '<span class="shared-owner">gone</span>' +
+        (s.shareId ? '<button class="gls-card-del" style="position:static" onclick="leaveShare(event,\'' + escAttr(s.shareId) + '\')" title="Remove">×</button>' : '') +
+      '</div>';
+      return;
+    }
+
+    if (s.isDir)
+    {
+      var open = !!sharedExpanded[id];
+      html += '<div class="file-item shared-row" onclick="toggleSharedFolder(\'' + escAttr(id) + '\')">' +
+        '<span class="file-icon">' + FOLDER_ICON + '</span>' +
+        '<span class="file-name" title="' + escAttr(ownerLabel) + '">' + (open ? '▾ ' : '▸ ') + escHtml(s.name) + '</span>' +
+        sharePermBadge(s.permission) +
+      '</div>';
+
+      if (open && sharedChildren[id])
+        html += sharedFolderChildrenHtml(s, sharedChildren[id], 1);
+    }
+    else
+    {
+      sharedRegistry[id] = { shareId: s.shareId, link: s.link, subPath: '', name: s.name, permission: s.permission, ownerEmail: s.ownerEmail };
+      html += sharedFileRowHtml(id, s.name, ownerLabel, s.permission, 0);
+    }
+  });
+
+  list.innerHTML = html;
+}
+
+function sharedFolderChildrenHtml(share, entries, depth)
+{
+  var html = '';
+  var parentId = sharedEntryId(share);
+  var ownerLabel = share.link ? 'Shared via link by ' + share.ownerEmail : 'Shared by ' + share.ownerEmail;
+  entries.forEach(function(e)
+  {
+    if (e.isDir)
+    {
+      html += '<div class="file-item shared-row" style="padding-left:' + (10 + depth * 14) + 'px">' +
+        '<span class="file-icon">' + FOLDER_ICON + '</span>' +
+        '<span class="file-name">' + escHtml(e.name) + '</span>' +
+      '</div>' + sharedFolderChildrenHtml(share, e.children || [], depth + 1);
+    }
+    else
+    {
+      var key = parentId + '|' + e.relPath;
+      sharedRegistry[key] = { shareId: share.shareId, link: share.link, subPath: e.relPath, name: e.name, permission: share.permission, ownerEmail: share.ownerEmail };
+      html += sharedFileRowHtml(key, e.name, ownerLabel, share.permission, depth);
+    }
+  });
+  return html;
+}
+
+async function toggleSharedFolder(id)
+{
+  sharedExpanded[id] = !sharedExpanded[id];
+  if (sharedExpanded[id] && !sharedChildren[id])
+  {
+    var s = sharedEntries.find(function(x){ return sharedEntryId(x) === id; });
+    try
+    {
+      sharedChildren[id] = s && s.link
+        ? await Platform.listLinkFolder(s.link, '')
+        : await Platform.listSharedFolder(s.shareId, '');
+    }
+    catch(e) { sharedChildren[id] = []; }
+  }
+  renderSharedSection();
+}
+
+async function leaveShare(e, shareId)
+{
+  e.stopPropagation();
+  try { await Platform.revokeShare(shareId); } catch(err) {}
+  refreshSharedSection();
+}
+
+/// Entered via a share-link URL (…/#link=<token>): resolves the token, adds
+/// the entry to the "Shared with me" section, and opens it if it's a file.
+async function initLinkAccess(token)
+{
+  var meta;
+  try { meta = await Platform.linkMeta(token); }
+  catch(e) { console.warn('Share link error', e); return; }
+
+  sharedEntries = sharedEntries.filter(function(s){ return s.link !== token; });
+  sharedEntries.push({
+    link: token,
+    ownerEmail: meta.ownerEmail,
+    name: meta.name,
+    isDir: meta.isDir,
+    permission: meta.permission,
+    exists: meta.exists
+  });
+  renderSharedSection();
+
+  if (!meta.exists) return;
+
+  if (meta.isDir)
+    await toggleSharedFolder('link:' + token);
+  else
+    await openSharedRegistry('link:' + token);
+}
+
+async function openSharedRegistry(key)
+{
+  var entry = sharedRegistry[key];
+  if (!entry) return;
+
+  var content;
+  try
+  {
+    content = entry.link
+      ? await Platform.readLinkFile(entry.link, entry.subPath)
+      : await Platform.readSharedFile(entry.shareId, entry.subPath);
+  }
+  catch(err)
+  {
+    console.warn('Shared read error', err);
+    return;
+  }
+
+  if (currentFileId && currentFileId !== SHARED_TMP_ID)
+    recordFileHistory(currentFileId);
+
+  var type = typeForFileName(entry.name);
+
+  files[SHARED_TMP_ID] = {
+    name: entry.name.replace(/\.[^.]+$/, ''),
+    type: type,
+    folder: '',
+    modified: Date.now(),
+    content: content,
+    contentLoaded: true
+  };
+
+  sharedCtx = {
+    shareId: entry.shareId,
+    link: entry.link,
+    subPath: entry.subPath,
+    permission: entry.permission,
+    ownerEmail: entry.ownerEmail
+  };
+
+  currentFileId = SHARED_TMP_ID;
+  switchAppType(type, false);
+  renderFileList();
+
+  var file = files[SHARED_TMP_ID];
+  if (type === 'doc')           loadDocFile(file);
+  else if (type === 'graph')    loadGraphFile(file);
+  else if (type === 'notebook') loadNotebookFile(file);
+  else if (type === 'glossary') loadGlossaryFile(file);
+  else if (type === 'calendar') loadCalendarFile(file);
+  else if (type === 'economy')  loadEconomyFile(file);
+  else if (type === 'bestiary') loadBestiaryFile(file);
+  else                          loadSheetFile(file);
+
+  applySharedReadOnly();
+  updateCommentsUI();
+}
+
+function exitSharedMode()
+{
+  if (!sharedCtx && !files[SHARED_TMP_ID]) return;
+  sharedCtx = null;
+  delete files[SHARED_TMP_ID];
+  applySharedReadOnly();
+}
+
+function applySharedReadOnly()
+{
+  var ro = !!(sharedCtx && sharedCtx.permission !== 'edit');
+  var ed = document.getElementById('editor');
+  if (ed) ed.readOnly = ro;
+  var ti = document.getElementById('doc-title-input');
+  if (ti) ti.readOnly = !!sharedCtx; // renaming someone else's file isn't a thing
+  document.body.classList.toggle('shared-readonly', ro);
+
+  var banner = document.getElementById('view-only-banner');
+  if (!banner) return;
+  if (sharedCtx)
+  {
+    var via = sharedCtx.link ? 'Shared via link by ' : 'Shared by ';
+    banner.style.display = '';
+    banner.textContent = sharedCtx.permission === 'edit'
+      ? via + sharedCtx.ownerEmail + ' — you can edit'
+      : sharedCtx.permission === 'comment'
+        ? via + sharedCtx.ownerEmail + ' — view & comment only'
+        : via + sharedCtx.ownerEmail + ' — view only';
+  }
+  else
+    banner.style.display = 'none';
+}
+
+// ── Share modal (owner side) ──
+
+var shareModalTarget = null; // { relPath, isDir, label }
+
+function openShareModal()
+{
+  var t = contextMenuTarget;
+  if (!t || t.kind === 'root') return;
+
+  var isDir = t.kind === 'folder';
+  var label = isDir ? t.id : (files[t.id] ? files[t.id].name : t.id);
+  shareModalTarget = { relPath: t.id, isDir: isDir, label: label };
+
+  closeContextMenu();
+
+  document.getElementById('share-modal-title').textContent = 'Share "' + label + '"';
+  document.getElementById('share-email').value = '';
+  document.getElementById('share-error').style.display = 'none';
+  document.getElementById('share-modal').style.display = 'flex';
+  renderShareModalList();
+  renderShareLinksList();
+}
+
+// ── Share links ("anyone with the link") ──
+
+function shareLinkUrl(token)
+{
+  return window.location.origin + '/#link=' + token;
+}
+
+async function renderShareLinksList()
+{
+  if (!shareModalTarget) return;
+  var box = document.getElementById('share-links-list');
+  var links = [];
+  try { links = await Platform.listShareLinks(shareModalTarget.relPath); }
+  catch(e) {}
+
+  box.innerHTML = links.length
+    ? links.map(function(l){
+        return '<div class="share-modal-row">' +
+          '<span class="share-modal-email share-link-url" title="' + escAttr(shareLinkUrl(l.id)) + '">' + escHtml(shareLinkUrl(l.id)) + '</span>' +
+          sharePermBadge(l.permission) +
+          '<button class="share-copy-btn" onclick="copyShareLink(\'' + escAttr(l.id) + '\', this)">Copy</button>' +
+          '<button class="gls-card-del" style="position:static" onclick="revokeLinkRow(\'' + escAttr(l.id) + '\')" title="Revoke link">×</button>' +
+        '</div>';
+      }).join('')
+    : '<div class="share-modal-empty">No links yet — anyone who gets one can open this without an account.</div>';
+}
+
+async function createLinkRow()
+{
+  if (!shareModalTarget) return;
+  var perm = document.getElementById('share-link-perm').value,
+      errEl = document.getElementById('share-error');
+  errEl.style.display = 'none';
+  try
+  {
+    await Platform.createShareLink(shareModalTarget.relPath, shareModalTarget.isDir, perm);
+    renderShareLinksList();
+  }
+  catch(e)
+  {
+    errEl.textContent = e.message || 'Creating the link failed';
+    errEl.style.display = '';
+  }
+}
+
+async function copyShareLink(token, btn)
+{
+  var url = shareLinkUrl(token);
+  try
+  {
+    await navigator.clipboard.writeText(url);
+    btn.textContent = 'Copied!';
+    setTimeout(function(){ btn.textContent = 'Copy'; }, 1400);
+  }
+  catch(e)
+  {
+    // Clipboard API needs a secure context; fall back to a copyable prompt.
+    window.prompt('Copy this link:', url);
+  }
+}
+
+async function revokeLinkRow(linkId)
+{
+  try { await Platform.revokeShareLink(linkId); } catch(e) {}
+  renderShareLinksList();
+}
+
+function closeShareModal()
+{
+  document.getElementById('share-modal').style.display = 'none';
+  shareModalTarget = null;
+}
+
+async function renderShareModalList()
+{
+  if (!shareModalTarget) return;
+  var box = document.getElementById('share-modal-list');
+  var shares = [];
+  try { shares = await Platform.listSharesFor(shareModalTarget.relPath); }
+  catch(e) {}
+
+  box.innerHTML = shares.length
+    ? shares.map(function(s){
+        return '<div class="share-modal-row">' +
+          '<span class="share-modal-email">' + escHtml(s.email) + '</span>' +
+          sharePermBadge(s.permission) +
+          '<button class="gls-card-del" style="position:static" onclick="revokeShareRow(\'' + escAttr(s.id) + '\')" title="Revoke">×</button>' +
+        '</div>';
+      }).join('')
+    : '<div class="share-modal-empty">Not shared with anyone yet.</div>';
+}
+
+async function revokeShareRow(shareId)
+{
+  try { await Platform.revokeShare(shareId); } catch(e) {}
+  renderShareModalList();
+}
+
+async function submitShare()
+{
+  if (!shareModalTarget) return;
+  var email = document.getElementById('share-email').value.trim(),
+      perm  = document.getElementById('share-perm').value,
+      errEl = document.getElementById('share-error');
+  if (!email) return;
+
+  errEl.style.display = 'none';
+  try
+  {
+    await Platform.shareEntry(shareModalTarget.relPath, shareModalTarget.isDir, email, perm);
+    document.getElementById('share-email').value = '';
+    renderShareModalList();
+  }
+  catch(e)
+  {
+    errEl.textContent = e.message || 'Sharing failed';
+    errEl.style.display = '';
+  }
+}
+
+// ── Comments (Documents only) ──
+
+var commentsVisible = false;
+
+function commentTarget()
+{
+  if (Platform.isNative) return null;
+  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'doc') return null;
+  if (sharedCtx && sharedCtx.link) return { link: sharedCtx.link, subPath: sharedCtx.subPath };
+  if (sharedCtx) return { share: sharedCtx.shareId, subPath: sharedCtx.subPath };
+  if (!workFolderRoot) return null; // not logged in / no workspace
+  return { path: currentFileId };
+}
+
+function updateCommentsUI()
+{
+  var btn = document.getElementById('comments-btn');
+  if (!btn) return;
+  var target = commentTarget();
+  btn.style.display = target ? '' : 'none';
+  if (!target)
+  {
+    commentsVisible = false;
+    document.getElementById('comments-panel').style.display = 'none';
+    return;
+  }
+  if (commentsVisible) refreshComments();
+  else refreshCommentsCount();
+}
+
+function toggleCommentsPanel()
+{
+  commentsVisible = !commentsVisible;
+  document.getElementById('comments-panel').style.display = commentsVisible ? 'flex' : 'none';
+  if (commentsVisible) refreshComments();
+}
+
+async function refreshCommentsCount()
+{
+  var target = commentTarget();
+  var badge = document.getElementById('comments-count');
+  if (!target || !badge) return;
+  try
+  {
+    var comments = await Platform.listComments(target);
+    badge.textContent = comments.length;
+    badge.style.display = comments.length ? '' : 'none';
+  }
+  catch(e) { badge.style.display = 'none'; }
+}
+
+async function refreshComments()
+{
+  var target = commentTarget();
+  if (!target) return;
+
+  var listEl = document.getElementById('comments-list');
+  var canPost = !sharedCtx || sharedCtx.permission === 'comment' || sharedCtx.permission === 'edit';
+  document.getElementById('comments-compose').style.display = canPost ? '' : 'none';
+  document.getElementById('comments-no-perm').style.display = canPost ? 'none' : '';
+
+  var comments = [];
+  try { comments = await Platform.listComments(target); }
+  catch(e)
+  {
+    listEl.innerHTML = '<div class="comments-empty">' + escHtml(e.message || 'Could not load comments') + '</div>';
+    return;
+  }
+
+  var badge = document.getElementById('comments-count');
+  if (badge)
+  {
+    badge.textContent = comments.length;
+    badge.style.display = comments.length ? '' : 'none';
+  }
+
+  listEl.innerHTML = comments.length
+    ? comments.map(function(c){
+        var when = new Date(c.createdAt).toLocaleString();
+        return '<div class="comment-item">' +
+          '<div class="comment-meta">' +
+            '<span class="comment-author">' + escHtml(c.authorEmail || 'Anonymous') + '</span>' +
+            '<span class="comment-when">' + escHtml(when) + '</span>' +
+            (c.mine ? '<button class="gls-card-del" style="position:static" onclick="removeComment(\'' + escAttr(c.id) + '\')" title="Delete">×</button>' : '') +
+          '</div>' +
+          '<div class="comment-body">' + escHtml(c.body) + '</div>' +
+        '</div>';
+      }).join('')
+    : '<div class="comments-empty">No comments yet.</div>';
+
+  listEl.scrollTop = listEl.scrollHeight;
+}
+
+async function submitComment()
+{
+  var target = commentTarget();
+  var input = document.getElementById('comment-input');
+  if (!target || !input.value.trim()) return;
+  try
+  {
+    await Platform.addComment(target, input.value.trim());
+    input.value = '';
+    refreshComments();
+  }
+  catch(e)
+  {
+    document.getElementById('comments-list').innerHTML += '<div class="comments-empty">' + escHtml(e.message || 'Posting failed') + '</div>';
+  }
+}
+
+async function removeComment(id)
+{
+  try { await Platform.deleteComment(id); } catch(e) {}
+  refreshComments();
 }
 
 init();

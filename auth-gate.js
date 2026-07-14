@@ -18,7 +18,7 @@
   function loadApp() {
     gate.style.display = 'none';
     var script = document.createElement('script');
-    script.src = 'main.js';
+    script.src = 'main.js?v=4'; // keep the version in step with index.html's asset tags
     document.body.appendChild(script);
   }
 
@@ -53,6 +53,12 @@
   });
 
   if (Platform.isNative) {
+    loadApp();
+    return;
+  }
+
+  // Share links carry their own authorization (the token); no login needed.
+  if (/^#link=/.test(window.location.hash)) {
     loadApp();
     return;
   }

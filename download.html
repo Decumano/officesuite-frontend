@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Download OfficeSuite</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: #14161a; color: #eee; font-family: system-ui, sans-serif;
+    }
+    .card {
+      width: min(560px, calc(100vw - 32px)); padding: 32px; border-radius: 10px;
+      background: #1e2126; box-shadow: 0 8px 30px rgba(0, 0, 0, .4); box-sizing: border-box;
+    }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: #9aa0aa; font-size: 13px; margin-bottom: 22px; }
+    .sub a { color: #4a7dfc; }
+    h2 { font-size: 14px; color: #c7ccd4; margin: 20px 0 8px; border-bottom: 1px solid #2a2e35; padding-bottom: 6px; }
+    .asset { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; font-size: 13.5px; }
+    .asset .label { color: #d7dbe2; }
+    .asset .size { color: #7c828d; font-size: 12px; margin-left: 8px; }
+    .asset a {
+      flex-shrink: 0; text-decoration: none; background: #4a7dfc; color: #fff; font-weight: 600;
+      font-size: 12.5px; padding: 6px 14px; border-radius: 6px;
+    }
+    .asset a:hover { background: #3d6cf0; }
+    .note { color: #9aa0aa; font-size: 12px; margin-top: 18px; line-height: 1.5; }
+    .note a, #fallback a { color: #4a7dfc; }
+    #status { color: #9aa0aa; font-size: 13.5px; }
+    #fallback { display: none; font-size: 13.5px; color: #d7dbe2; line-height: 1.6; }
+    .back { display: inline-block; margin-top: 20px; font-size: 13px; color: #4a7dfc; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Download the desktop app</h1>
+    <div class="sub" id="release-info">OfficeSuite for Windows, Linux and macOS.</div>
+
+    <div id="status">Fetching the latest release&hellip;</div>
+    <div id="fallback">
+      Couldn't load the release list here &mdash; grab the latest build directly from the
+      <a id="releases-page-link" href="#" target="_blank" rel="noopener">GitHub releases page</a>.
+    </div>
+    <div id="assets"></div>
+
+    <div class="note">
+      The Windows <strong>portable</strong> build needs no installation &mdash; unzip and run. It requires
+      Microsoft's <a href="https://developer.microsoft.com/microsoft-edge/webview2/" target="_blank"
+      rel="noopener">WebView2 runtime</a>, which ships preinstalled on Windows 10 and 11.
+      The installer takes care of it automatically either way.
+    </div>
+
+    <a class="back" href="./">&larr; Back to the web app</a>
+  </div>
+
+  <script>
+    // Same repo the desktop app is built from; its release workflow
+    // (.github/workflows/release.yml in that repo) publishes the assets
+    // this page lists.
+    var DESKTOP_REPO = 'Decumano/OfficeSuite';
+
+    var RELEASES_PAGE = 'https://github.com/' + DESKTOP_REPO + '/releases/latest';
+    document.getElementById('releases-page-link').href = RELEASES_PAGE;
+
+    function classify(name) {
+      var n = name.toLowerCase();
+      // Updater/signature artifacts aren't for humans.
+      if (n.endsWith('.sig') || n.endsWith('.json') || n.endsWith('.app.tar.gz')) return null;
+      if (n.endsWith('.exe')) return { os: 'Windows', label: 'Installer (recommended)', rank: 0 };
+      if (n.indexOf('portable') !== -1 && n.endsWith('.zip')) return { os: 'Windows', label: 'Portable (no install)', rank: 1 };
+      if (n.endsWith('.msi')) return { os: 'Windows', label: 'MSI installer', rank: 2 };
+      if (n.endsWith('.appimage')) return { os: 'Linux', label: 'AppImage (portable)', rank: 0 };
+      if (n.endsWith('.deb')) return { os: 'Linux', label: 'Debian / Ubuntu package', rank: 1 };
+      if (n.endsWith('.rpm')) return { os: 'Linux', label: 'Fedora / openSUSE package', rank: 2 };
+      if (n.endsWith('.dmg')) return { os: 'macOS', label: 'Disk image', rank: 0 };
+      return null;
+    }
+
+    function fmtSize(bytes) {
+      if (!bytes) return '';
+      var mb = bytes / (1024 * 1024);
+      return mb >= 1 ? mb.toFixed(1) + ' MB' : Math.round(bytes / 1024) + ' KB';
+    }
+
+    function showFallback() {
+      document.getElementById('status').style.display = 'none';
+      document.getElementById('fallback').style.display = 'block';
+    }
+
+    fetch('https://api.github.com/repos/' + DESKTOP_REPO + '/releases/latest')
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (release) {
+        var groups = { Windows: [], Linux: [], macOS: [] };
+        (release.assets || []).forEach(function (asset) {
+          var kind = classify(asset.name);
+          if (kind) groups[kind.os].push({ kind: kind, asset: asset });
+        });
+
+        var total = groups.Windows.length + groups.Linux.length + groups.macOS.length;
+        if (!total) { showFallback(); return; }
+
+        var when = release.published_at ? new Date(release.published_at).toLocaleDateString() : '';
+        document.getElementById('release-info').innerHTML =
+          'Latest version: <strong>' + (release.tag_name || '') + '</strong>' +
+          (when ? ' <span style="color:#7c828d">(' + when + ')</span>' : '') +
+          ' &mdash; <a href="' + (release.html_url || RELEASES_PAGE) + '" target="_blank" rel="noopener">release notes</a>';
+
+        var container = document.getElementById('assets');
+        ['Windows', 'Linux', 'macOS'].forEach(function (os) {
+          if (!groups[os].length) return;
+          groups[os].sort(function (a, b) { return a.kind.rank - b.kind.rank; });
+          var h = document.createElement('h2');
+          h.textContent = os;
+          container.appendChild(h);
+          groups[os].forEach(function (item) {
+            var row = document.createElement('div');
+            row.className = 'asset';
+            var label = document.createElement('div');
+            label.className = 'label';
+            label.textContent = item.kind.label;
+            var size = document.createElement('span');
+            size.className = 'size';
+            size.textContent = fmtSize(item.asset.size);
+            label.appendChild(size);
+            var link = document.createElement('a');
+            link.href = item.asset.browser_download_url;
+            link.textContent = 'Download';
+            row.appendChild(label);
+            row.appendChild(link);
+            container.appendChild(row);
+          });
+        });
+        document.getElementById('status').style.display = 'none';
+      })
+      .catch(showFallback);
+  </script>
+</body>
+</html>

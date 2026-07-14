@@ -110,6 +110,166 @@ var Platform = (function () {
     return api('/auth/logout', { method: 'POST' }).then(function () { return undefined; });
   }
 
+  // ── Cloud sync (Tauri only; the web build already talks to the cloud
+  // natively through the calls above and has no separate "connect" step) ──
+
+  function cloudConnect(serverUrl, email, password, root) {
+    if (!tauri) return Promise.reject(new Error('cloud sync is desktop-only'));
+    return tauri.invoke('cloud_connect', { serverUrl: serverUrl, email: email, password: password, root: root });
+  }
+
+  function cloudDisconnect() {
+    if (!tauri) return Promise.reject(new Error('cloud sync is desktop-only'));
+    return tauri.invoke('cloud_disconnect');
+  }
+
+  function cloudStatus() {
+    if (!tauri) return Promise.resolve({ connected: false, mode: 'disconnected' });
+    return tauri.invoke('cloud_status');
+  }
+
+  function cloudSyncNow() {
+    if (!tauri) return Promise.reject(new Error('cloud sync is desktop-only'));
+    return tauri.invoke('cloud_sync_now');
+  }
+
+  function cloudListConflicts() {
+    if (!tauri) return Promise.resolve([]);
+    return tauri.invoke('cloud_list_conflicts');
+  }
+
+  function cloudResolveConflict(relPath, choice) {
+    if (!tauri) return Promise.reject(new Error('cloud sync is desktop-only'));
+    return tauri.invoke('cloud_resolve_conflict', { relPath: relPath, choice: choice });
+  }
+
+  // ── Sharing & comments (web only; the desktop app works on a local folder
+  // and reaches shared content through the website instead) ──
+
+  function webOnly() { return Promise.reject(new Error('sharing is available on the web app')); }
+
+  function shareEntry(relPath, isDir, email, permission) {
+    if (tauri) return webOnly();
+    return apiJson('/shares', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ relPath: relPath, isDir: isDir, email: email, permission: permission })
+    });
+  }
+
+  function listSharesFor(relPath) {
+    if (tauri) return Promise.resolve([]);
+    return apiJson('/shares?path=' + encodeURIComponent(relPath));
+  }
+
+  function revokeShare(shareId) {
+    if (tauri) return webOnly();
+    return api('/shares/' + encodeURIComponent(shareId), { method: 'DELETE' }).then(function () { return undefined; });
+  }
+
+  function listSharedWithMe() {
+    if (tauri) return Promise.resolve([]);
+    return apiJson('/shared');
+  }
+
+  function listSharedFolder(shareId, subPath) {
+    if (tauri) return webOnly();
+    return apiJson('/shared/list?share=' + encodeURIComponent(shareId) + '&path=' + encodeURIComponent(subPath || ''));
+  }
+
+  function readSharedFile(shareId, subPath) {
+    if (tauri) return webOnly();
+    return api('/shared/file?share=' + encodeURIComponent(shareId) + '&path=' + encodeURIComponent(subPath || ''))
+      .then(function (res) { return res.text(); });
+  }
+
+  function writeSharedFile(shareId, subPath, content) {
+    if (tauri) return webOnly();
+    return api('/shared/file?share=' + encodeURIComponent(shareId) + '&path=' + encodeURIComponent(subPath || ''), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: content
+    }).then(function () { return undefined; });
+  }
+
+  // ── Link shares ("anyone with the link"; the token is the authorization) ──
+
+  function createShareLink(relPath, isDir, permission) {
+    if (tauri) return webOnly();
+    return apiJson('/links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ relPath: relPath, isDir: isDir, permission: permission })
+    });
+  }
+
+  function listShareLinks(relPath) {
+    if (tauri) return Promise.resolve([]);
+    return apiJson('/links?path=' + encodeURIComponent(relPath));
+  }
+
+  function revokeShareLink(linkId) {
+    if (tauri) return webOnly();
+    return api('/links/' + encodeURIComponent(linkId), { method: 'DELETE' }).then(function () { return undefined; });
+  }
+
+  function linkMeta(token) {
+    if (tauri) return webOnly();
+    return apiJson('/link/' + encodeURIComponent(token));
+  }
+
+  function listLinkFolder(token, subPath) {
+    if (tauri) return webOnly();
+    return apiJson('/link/' + encodeURIComponent(token) + '/list?path=' + encodeURIComponent(subPath || ''));
+  }
+
+  function readLinkFile(token, subPath) {
+    if (tauri) return webOnly();
+    return api('/link/' + encodeURIComponent(token) + '/file?path=' + encodeURIComponent(subPath || ''))
+      .then(function (res) { return res.text(); });
+  }
+
+  function writeLinkFile(token, subPath, content) {
+    if (tauri) return webOnly();
+    return api('/link/' + encodeURIComponent(token) + '/file?path=' + encodeURIComponent(subPath || ''), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: content
+    }).then(function () { return undefined; });
+  }
+
+  // target: { path } for my own file, { share, subPath } for an account
+  // share, or { link, subPath } for a share link (works logged out).
+  function commentQs(target) {
+    if (target.link) return 'link=' + encodeURIComponent(target.link) + '&subPath=' + encodeURIComponent(target.subPath || '');
+    if (target.share) return 'share=' + encodeURIComponent(target.share) + '&subPath=' + encodeURIComponent(target.subPath || '');
+    return 'path=' + encodeURIComponent(target.path);
+  }
+
+  function listComments(target) {
+    if (tauri) return Promise.resolve([]);
+    return apiJson('/comments?' + commentQs(target));
+  }
+
+  function addComment(target, body) {
+    if (tauri) return webOnly();
+    var payload = target.link
+      ? { link: target.link, subPath: target.subPath || '', body: body }
+      : target.share
+        ? { share: target.share, subPath: target.subPath || '', body: body }
+        : { path: target.path, body: body };
+    return apiJson('/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  }
+
+  function deleteComment(commentId) {
+    if (tauri) return webOnly();
+    return api('/comments/' + encodeURIComponent(commentId), { method: 'DELETE' }).then(function () { return undefined; });
+  }
+
   var DEFAULT_FILE_CONTENT = [
     "# Welcome to Lore Keep\n\n",
     "Lore Keep is a lightweight office suite that stores everything in **Markdown**.\n\n",
@@ -203,6 +363,29 @@ var Platform = (function () {
     currentUser: currentUser,
     register: register,
     login: login,
-    logout: logout
+    logout: logout,
+    cloudConnect: cloudConnect,
+    cloudDisconnect: cloudDisconnect,
+    cloudStatus: cloudStatus,
+    cloudSyncNow: cloudSyncNow,
+    cloudListConflicts: cloudListConflicts,
+    cloudResolveConflict: cloudResolveConflict,
+    shareEntry: shareEntry,
+    listSharesFor: listSharesFor,
+    revokeShare: revokeShare,
+    listSharedWithMe: listSharedWithMe,
+    listSharedFolder: listSharedFolder,
+    readSharedFile: readSharedFile,
+    writeSharedFile: writeSharedFile,
+    listComments: listComments,
+    addComment: addComment,
+    deleteComment: deleteComment,
+    createShareLink: createShareLink,
+    listShareLinks: listShareLinks,
+    revokeShareLink: revokeShareLink,
+    linkMeta: linkMeta,
+    listLinkFolder: listLinkFolder,
+    readLinkFile: readLinkFile,
+    writeLinkFile: writeLinkFile
   };
 })();

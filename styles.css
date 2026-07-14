@@ -87,7 +87,15 @@ html, body
 #sidebar.sidebar--rail .sidebar-search-wrap,
 #sidebar.sidebar--rail #file-list,
 #sidebar.sidebar--rail #global-search-results,
-#sidebar.sidebar--rail .sidebar-footer { display: none !important; }
+#sidebar.sidebar--rail #shared-list,
+#sidebar.sidebar--rail #shared-section-header { display: none !important; }
+
+/* Keep New + the ⋮ menu usable when collapsed: stack them, New shrinks to
+   just its "+" icon (its text label is hidden), the menu button sits below. */
+#sidebar.sidebar--rail .sidebar-footer { flex-direction: column; align-items: center; padding: 8px 6px; gap: 6px; }
+#sidebar.sidebar--rail .btn-new { flex: none; width: 36px; height: 36px; padding: 0; justify-content: center; }
+#sidebar.sidebar--rail .btn-new .btn-new-label { display: none; }
+#sidebar.sidebar--rail .sidebar-footer > div { width: 100%; display: flex; justify-content: center; }
 .sidebar-logo
 {
   padding: 20px 20px 14px;
@@ -3016,7 +3024,10 @@ mark.gs-hl
 
 /* ─── SETTINGS TOGGLES ─────────────────────────────────── */
 
-.settings-modal-wide { max-width: 460px; }
+.settings-modal-wide { max-width: 460px; height: 640px; max-height: 85vh; }
+.settings-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 8px; }
+.settings-modal-body::-webkit-scrollbar { width: 4px; }
+.settings-modal-body::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 4px; }
 .settings-section { margin-bottom: 20px; }
 .settings-type-toggles {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px;
@@ -3267,3 +3278,130 @@ mark.gs-hl
   align-items: center;
   gap: 4px;
 }
+
+/* ── BESTIARY ── */
+
+.bst-card .gls-card-del { position: absolute; top: 10px; right: 8px; }
+.bst-card {
+  padding: 12px 34px 12px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; position: relative;
+  transition: background .12s;
+  margin-bottom: 1px; border-radius: 0 var(--radius) var(--radius) 0;
+}
+.bst-card:hover { background: rgba(255,255,255,.05); }
+
+.bst-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bst-name {
+  font-size: 16px; font-weight: 700; color: var(--text);
+  line-height: 1.2; letter-spacing: -.01em;
+}
+.bst-danger {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 700; letter-spacing: .12em;
+  border: 1px solid; border-radius: 3px; padding: 1px 6px;
+}
+.bst-danger-label { letter-spacing: .03em; }
+.bst-habitat { font-size: 11px; color: var(--text3); font-style: italic; }
+.bst-desc { font-size: 13px; color: var(--text); line-height: 1.5; margin-top: 5px; }
+.bst-abilities { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+
+/* ── SHARING & COMMENTS ── */
+
+#shared-list { overflow-y: auto; max-height: 30vh; flex-shrink: 0; }
+.shared-section-header { cursor: pointer; user-select: none; }
+.shared-row { display: flex; align-items: center; gap: 6px; }
+.shared-row .file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shared-gone { opacity: .55; }
+.shared-owner { font-size: 10px; color: var(--text3); font-style: italic; }
+
+.share-perm-badge {
+  flex-shrink: 0; font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; border: 1px solid; border-radius: 3px; padding: 0 4px;
+}
+
+.share-add-row { display: flex; gap: 8px; margin-top: 10px; }
+.share-add-row input { flex: 1; margin: 0; }
+.share-add-row select { width: 130px; margin: 0; }
+.share-modal-list { max-height: 180px; overflow-y: auto; }
+.share-modal-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 2px; border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.share-modal-email { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.share-modal-empty { color: var(--text3); font-size: 12.5px; padding: 8px 2px; }
+
+#view-only-banner {
+  position: fixed; top: 10px; right: 16px; z-index: 900;
+  background: var(--bg3); border: 1px solid var(--border2); color: var(--text2);
+  font-size: 12px; padding: 6px 12px; border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.3); pointer-events: none;
+}
+
+/* Read-only shared file: neutralise the editing toolbars */
+.shared-readonly #toolbar .toolbar-group,
+.shared-readonly .nbp-toolbar .tb-btn-wide { pointer-events: none; opacity: .45; }
+
+#comments-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 300px; z-index: 800;
+  display: flex; flex-direction: column;
+  background: var(--bg2); border-left: 1px solid var(--border);
+  box-shadow: -6px 0 22px rgba(0,0,0,.25);
+}
+.comments-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; font-weight: 700; font-size: 14px; color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.comments-close {
+  background: none; border: none; color: var(--text3); font-size: 18px;
+  cursor: pointer; line-height: 1;
+}
+.comments-close:hover { color: var(--text); }
+#comments-list { flex: 1; overflow-y: auto; padding: 10px 14px; }
+.comment-item { margin-bottom: 14px; }
+.comment-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.comment-author { font-size: 12px; font-weight: 700; color: var(--text2); overflow: hidden; text-overflow: ellipsis; }
+.comment-when { font-size: 10px; color: var(--text3); flex: 1; }
+.comment-body { font-size: 13px; color: var(--text); line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; }
+.comments-empty { color: var(--text3); font-size: 12.5px; padding: 6px 0; }
+.comments-compose { padding: 10px 14px; border-top: 1px solid var(--border); }
+.comments-compose textarea {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  background: var(--bg3); color: var(--text); border: 1px solid var(--border2);
+  border-radius: 6px; padding: 8px; font-size: 13px; font-family: inherit;
+  margin-bottom: 8px;
+}
+.comments-compose .btn-create { width: 100%; }
+.comments-no-perm { padding: 10px 14px; border-top: 1px solid var(--border); color: var(--text3); font-size: 12px; }
+
+.comments-count {
+  display: inline-block; min-width: 14px; text-align: center;
+  background: var(--accent); color: #fff; font-size: 9px; font-weight: 700;
+  border-radius: 8px; padding: 1px 4px; margin-left: 3px; vertical-align: top;
+}
+
+/* Share links */
+.share-links-head {
+  margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);
+  font-size: 11px; font-weight: 800; color: var(--text3);
+  letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px;
+}
+.share-link-url { font-size: 11px; color: var(--text3); direction: rtl; text-align: left; white-space: nowrap; }
+.share-copy-btn {
+  flex-shrink: 0; background: var(--bg3); border: 1px solid var(--border2);
+  color: var(--text2); font-size: 11px; font-weight: 600;
+  border-radius: 4px; padding: 3px 9px; cursor: pointer;
+}
+.share-copy-btn:hover { background: var(--border2); color: var(--text); }
+
+/* Custom (user-made) doc templates in the New File dialog */
+.doc-tpl-custom { position: relative; padding-right: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+.doc-tpl-del {
+  position: absolute; top: 1px; right: 2px;
+  background: none; border: none; color: var(--text3); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 1px 3px; border-radius: 3px; display: none;
+}
+.doc-tpl-custom:hover .doc-tpl-del { display: block; }
+.doc-tpl-del:hover { color: #e74c3c; }
