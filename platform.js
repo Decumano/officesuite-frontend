@@ -110,6 +110,39 @@ var Platform = (function () {
     return api('/auth/logout', { method: 'POST' }).then(function () { return undefined; });
   }
 
+  // ── Cloud sync (Tauri only; the web build already talks to the cloud
+  // natively through the calls above and has no separate "connect" step) ──
+
+  function cloudConnect(serverUrl, email, password, root) {
+    if (!tauri) return Promise.reject(new Error('cloud sync is desktop-only'));
+    return tauri.invoke('cloud_connect', { serverUrl: serverUrl, email: email, password: password, root: root });
+  }
+
+  function cloudDisconnect() {
+    if (!tauri) return Promise.reject(new Error('cloud sync is desktop-only'));
+    return tauri.invoke('cloud_disconnect');
+  }
+
+  function cloudStatus() {
+    if (!tauri) return Promise.resolve({ connected: false, mode: 'disconnected' });
+    return tauri.invoke('cloud_status');
+  }
+
+  function cloudSyncNow() {
+    if (!tauri) return Promise.reject(new Error('cloud sync is desktop-only'));
+    return tauri.invoke('cloud_sync_now');
+  }
+
+  function cloudListConflicts() {
+    if (!tauri) return Promise.resolve([]);
+    return tauri.invoke('cloud_list_conflicts');
+  }
+
+  function cloudResolveConflict(relPath, choice) {
+    if (!tauri) return Promise.reject(new Error('cloud sync is desktop-only'));
+    return tauri.invoke('cloud_resolve_conflict', { relPath: relPath, choice: choice });
+  }
+
   var DEFAULT_FILE_CONTENT = [
     "# Welcome to Lore Keep\n\n",
     "Lore Keep is a lightweight office suite that stores everything in **Markdown**.\n\n",
@@ -203,6 +236,12 @@ var Platform = (function () {
     currentUser: currentUser,
     register: register,
     login: login,
-    logout: logout
+    logout: logout,
+    cloudConnect: cloudConnect,
+    cloudDisconnect: cloudDisconnect,
+    cloudStatus: cloudStatus,
+    cloudSyncNow: cloudSyncNow,
+    cloudListConflicts: cloudListConflicts,
+    cloudResolveConflict: cloudResolveConflict
   };
 })();

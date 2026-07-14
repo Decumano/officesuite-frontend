@@ -58,6 +58,9 @@
         <button class="app-tab" onclick="switchAppType('economy')" id="tab-economy" title="Currency &amp; Economy">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M14.8 9A2 2 0 0 0 13 8h-2a2 2 0 0 0 0 4h2a2 2 0 0 1 0 4h-2a2 2 0 0 1-1.8-1"/><line x1="12" y1="6" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="18"/></svg>
         </button>
+        <button class="app-tab" onclick="switchAppType('bestiary')" id="tab-bestiary" title="Bestiary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5.5" cy="10" r="1.6"/><circle cx="9.5" cy="6.5" r="1.6"/><circle cx="14.5" cy="6.5" r="1.6"/><circle cx="18.5" cy="10" r="1.6"/><path d="M12 11c-2.6 0-5.5 2.6-5.5 5a3 3 0 0 0 3 3c1 0 1.7-.5 2.5-.5s1.5.5 2.5.5a3 3 0 0 0 3-3c0-2.4-2.9-5-5.5-5z"/></svg>
+        </button>
       </div> <!-- END SIDEBAR TABS -->
 
       <div class="sidebar-section" ondragenter="handleDragEnter(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event,'')" oncontextmenu="openContextMenu(event,'root','')">
@@ -78,9 +81,9 @@
       </div>
 
       <div class="sidebar-footer">
-        <button class="btn-new" onclick="openNewModal()">
+        <button class="btn-new" onclick="openNewModal()" title="New file">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          New
+          <span class="btn-new-label">New</span>
         </button> <!-- New file button -->
 
         <div style="position:relative;">
@@ -100,6 +103,8 @@
             </div>
             <div class="file-menu-divider"></div>
             <button class="file-menu-item" onclick="handleFileMenuImport()">Import</button>
+            <div class="file-menu-divider"></div>
+            <button class="file-menu-item" onclick="handleFileMenuSaveTemplate()">Save as template&hellip;</button>
             <div class="file-menu-divider"></div>
             <button class="file-menu-item" onclick="handleFileMenuSettings()">Settings&hellip;</button>
           </div>
@@ -370,6 +375,27 @@
         </div>
       </div>
 
+      <!-- BESTIARY APP -->
+      <div id="bestiary-app" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+        <div id="bestiary-toolbar" class="nbp-toolbar">
+          <input id="bestiary-title-input" placeholder="Bestiary name…" oninput="onBestiaryTitleChange()">
+          <div class="toolbar-sep"></div>
+          <input class="tb-search" id="bst-search" type="text" placeholder="Search beasts…" oninput="onBestiarySearch(this.value)">
+          <div style="flex:1"></div>
+          <button class="tb-btn tb-btn-wide" id="bst-add-btn" onclick="openBeastModal(null)">+ Add beast</button>
+          <div class="toolbar-sep"></div>
+          <button class="tb-btn" title="Version history" onclick="openHistoryModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12,7 12,12 16,14"/></svg></button>
+        </div>
+        <div class="nbp-body">
+          <div class="nbp-page">
+            <div class="gls-scroll-wrap">
+              <div id="bst-body" class="gls-entries-list"></div>
+              <div class="data-empty" id="bst-empty">No beasts catalogued yet — click <strong>+ Add beast</strong> to start</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- CALENDAR APP -->
       <div id="calendar-app" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
         <div id="calendar-toolbar" class="nbp-toolbar">
@@ -521,6 +547,10 @@
         <div class="type-card" data-type="economy" onclick="selectNewType('economy',this)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M14.8 9A2 2 0 0 0 13 8h-2a2 2 0 0 0 0 4h2a2 2 0 0 1 0 4h-2a2 2 0 0 1-1.8-1"/><line x1="12" y1="6" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="18"/></svg>
           <span>Economy</span>
+        </div>
+        <div class="type-card" data-type="bestiary" onclick="selectNewType('bestiary',this)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5.5" cy="10" r="1.6"/><circle cx="9.5" cy="6.5" r="1.6"/><circle cx="14.5" cy="6.5" r="1.6"/><circle cx="18.5" cy="10" r="1.6"/><path d="M12 11c-2.6 0-5.5 2.6-5.5 5a3 3 0 0 0 3 3c1 0 1.7-.5 2.5-.5s1.5.5 2.5.5a3 3 0 0 0 3-3c0-2.4-2.9-5-5.5-5z"/></svg>
+          <span>Bestiary</span>
         </div>
       </div>
       <div id="doc-template-row" class="doc-template-row">
@@ -700,6 +730,7 @@
   <div class="modal-overlay" id="settings-modal">
     <div class="modal settings-modal-wide">
       <h3>Settings</h3>
+      <div class="settings-modal-body">
       <div class="settings-section">
         <div class="settings-field-label">Work folder</div>
         <p class="settings-help-text">
@@ -709,6 +740,28 @@
         </p>
         <div class="settings-folder-row">
           <span id="settings-folder-path" class="settings-folder-path">This browser (no folder set)</span>
+        </div>
+      </div>
+      <div class="settings-section" id="cloud-sync-section" style="display:none;">
+        <div class="settings-field-label">Cloud Sync</div>
+        <p class="settings-help-text">
+          Connect this folder to an officesuite-web server. Changes sync in the background and merge
+          like Git &mdash; edits that clash are flagged here for you to resolve.
+        </p>
+        <div id="cloud-sync-needs-folder" class="settings-help-text" style="display:none;">
+          Choose a work folder above first &mdash; that folder becomes the sync target.
+        </div>
+        <div id="cloud-sync-disconnected" style="display:none;">
+          <input class="modal-input" id="cloud-server-url" placeholder="Server URL, e.g. http://localhost:8080">
+          <input class="modal-input" id="cloud-email" placeholder="Email" type="email">
+          <input class="modal-input" id="cloud-password" placeholder="Password" type="password">
+          <button type="button" class="btn-create" onclick="connectCloud()">Connect</button>
+        </div>
+        <div id="cloud-sync-connected" style="display:none;">
+          <p class="settings-help-text" id="cloud-sync-status"></p>
+          <button type="button" class="btn-cancel" onclick="syncNowCloud()">Sync now</button>
+          <button type="button" class="btn-cancel" id="cloud-conflicts-btn" onclick="openSyncConflictsModal()" style="display:none;">View conflicts</button>
+          <button type="button" class="btn-cancel" onclick="disconnectCloud()">Disconnect</button>
         </div>
       </div>
       <div class="settings-section">
@@ -732,10 +785,45 @@
           <button type="button" class="btn-cancel settings-theme-reset" onclick="resetTheme()">Reset to default</button>
         </div>
       </div>
+      </div>
       <div class="modal-actions">
         <button class="btn-cancel" id="settings-stop-btn" onclick="stopUsingWorkFolder()" style="display:none;">Stop using this folder</button>
         <button class="btn-create" onclick="chooseWorkFolder()">Choose Folder&hellip;</button>
         <button class="btn-cancel" onclick="closeSettingsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SYNC CONFLICTS -->
+  <div class="modal-overlay" id="sync-conflicts-modal">
+    <div class="modal history-modal">
+      <h3>Sync Conflicts</h3>
+      <div id="sync-conflicts-list" class="history-list"></div>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeSyncConflictsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SYNC CONFLICT DIFF -->
+  <div class="modal-overlay" id="sync-conflict-diff-modal">
+    <div class="modal history-diff-modal">
+      <h3 id="sync-conflict-diff-title">Resolve Conflict</h3>
+      <div class="diff-columns">
+        <div class="diff-column">
+          <div class="diff-column-header">Your version</div>
+          <div class="diff-pane" id="sync-conflict-local-pane"></div>
+        </div>
+        <div class="diff-column">
+          <div class="diff-column-header">Cloud version</div>
+          <div class="diff-pane" id="sync-conflict-remote-pane"></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeSyncConflictDiffModal()">Back</button>
+        <button class="btn-cancel" onclick="resolveSyncConflict('remote')">Keep Cloud Version</button>
+        <button class="btn-cancel" onclick="resolveSyncConflict('both')">Keep Both</button>
+        <button class="btn-create" onclick="resolveSyncConflict('local')">Keep My Version</button>
       </div>
     </div>
   </div>

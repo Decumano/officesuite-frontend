@@ -86,8 +86,14 @@ html, body
 #sidebar.sidebar--rail .sidebar-section,
 #sidebar.sidebar--rail .sidebar-search-wrap,
 #sidebar.sidebar--rail #file-list,
-#sidebar.sidebar--rail #global-search-results,
-#sidebar.sidebar--rail .sidebar-footer { display: none !important; }
+#sidebar.sidebar--rail #global-search-results { display: none !important; }
+
+/* Keep New + the ⋮ menu usable when collapsed: stack them, New shrinks to
+   just its "+" icon (its text label is hidden), the menu button sits below. */
+#sidebar.sidebar--rail .sidebar-footer { flex-direction: column; align-items: center; padding: 8px 6px; gap: 6px; }
+#sidebar.sidebar--rail .btn-new { flex: none; width: 36px; height: 36px; padding: 0; justify-content: center; }
+#sidebar.sidebar--rail .btn-new .btn-new-label { display: none; }
+#sidebar.sidebar--rail .sidebar-footer > div { width: 100%; display: flex; justify-content: center; }
 .sidebar-logo
 {
   padding: 20px 20px 14px;
@@ -3016,7 +3022,10 @@ mark.gs-hl
 
 /* ─── SETTINGS TOGGLES ─────────────────────────────────── */
 
-.settings-modal-wide { max-width: 460px; }
+.settings-modal-wide { max-width: 460px; height: 640px; max-height: 85vh; }
+.settings-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 8px; }
+.settings-modal-body::-webkit-scrollbar { width: 4px; }
+.settings-modal-body::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 4px; }
 .settings-section { margin-bottom: 20px; }
 .settings-type-toggles {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px;
@@ -3267,3 +3276,40 @@ mark.gs-hl
   align-items: center;
   gap: 4px;
 }
+
+/* ── BESTIARY ── */
+
+.bst-card .gls-card-del { position: absolute; top: 10px; right: 8px; }
+.bst-card {
+  padding: 12px 34px 12px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; position: relative;
+  transition: background .12s;
+  margin-bottom: 1px; border-radius: 0 var(--radius) var(--radius) 0;
+}
+.bst-card:hover { background: rgba(255,255,255,.05); }
+
+.bst-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bst-name {
+  font-size: 16px; font-weight: 700; color: var(--text);
+  line-height: 1.2; letter-spacing: -.01em;
+}
+.bst-danger {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 700; letter-spacing: .12em;
+  border: 1px solid; border-radius: 3px; padding: 1px 6px;
+}
+.bst-danger-label { letter-spacing: .03em; }
+.bst-habitat { font-size: 11px; color: var(--text3); font-style: italic; }
+.bst-desc { font-size: 13px; color: var(--text); line-height: 1.5; margin-top: 5px; }
+.bst-abilities { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+
+/* Custom (user-made) doc templates in the New File dialog */
+.doc-tpl-custom { position: relative; padding-right: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+.doc-tpl-del {
+  position: absolute; top: 1px; right: 2px;
+  background: none; border: none; color: var(--text3); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 1px 3px; border-radius: 3px; display: none;
+}
+.doc-tpl-custom:hover .doc-tpl-del { display: block; }
+.doc-tpl-del:hover { color: #e74c3c; }
