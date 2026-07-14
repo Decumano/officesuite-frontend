@@ -10360,14 +10360,66 @@ function loadThemeChoice()
 function saveThemeChoice(choice)
 {
   try { localStorage.setItem('lk_theme', JSON.stringify(choice)); } catch(e) {}
+  persistRoamingTheme(choice);
 }
 
 function initTheme()
 {
   var choice = loadThemeChoice();
-  if (!choice) return;
-  var vars = resolveThemeChoice(choice);
-  if (vars) applyThemeVars(vars);
+  if (choice)
+  {
+    var vars = resolveThemeChoice(choice);
+    if (vars) applyThemeVars(vars);
+  }
+  // localStorage is only per-browser/per-install, so on a fresh device (or
+  // after an app reinstall wiped webview storage) pull the roamed choice from
+  // the workspace; repaints shortly after first paint when they differ.
+  loadRoamingTheme();
+}
+
+// ── ROAMING APPEARANCE ──
+// The theme choice also lives in a `_lkprefs.json` workspace sidecar (synced
+// across devices like the `_lktpl.json` template store), with localStorage
+// kept as the instant-paint cache.
+
+async function loadRoamingTheme()
+{
+  if (!workFolderRoot) return;
+  var prefs;
+  try { prefs = JSON.parse(await Platform.readWorkFile(workFolderRoot, '_lkprefs.json')); }
+  catch(e) { return; } // no prefs stored yet
+  if (!prefs || !('theme' in prefs)) return;
+
+  var localRaw  = localStorage.getItem('lk_theme'),
+      roamedRaw = prefs.theme ? JSON.stringify(prefs.theme) : null;
+  if (roamedRaw === localRaw) return;
+
+  try
+  {
+    if (roamedRaw) localStorage.setItem('lk_theme', roamedRaw);
+    else localStorage.removeItem('lk_theme');
+  }
+  catch(e) {}
+
+  if (prefs.theme)
+  {
+    var vars = resolveThemeChoice(prefs.theme);
+    if (vars) applyThemeVars(vars);
+  }
+  else
+    THEME_VAR_NAMES.forEach(function(name){ document.documentElement.style.removeProperty(name); });
+}
+
+/// choice = null records an explicit reset, so it roams too.
+async function persistRoamingTheme(choice)
+{
+  if (!workFolderRoot) return;
+  var prefs = {};
+  try { prefs = JSON.parse(await Platform.readWorkFile(workFolderRoot, '_lkprefs.json')) || {}; }
+  catch(e) {}
+  prefs.theme = choice;
+  try { await Platform.writeWorkFile(workFolderRoot, '_lkprefs.json', JSON.stringify(prefs, null, 2)); }
+  catch(e) { console.warn('Prefs write error', e); }
 }
 
 function selectThemePreset(name)
@@ -10392,6 +10444,7 @@ function resetTheme()
 {
   localStorage.removeItem('lk_theme');
   THEME_VAR_NAMES.forEach(function(name){ document.documentElement.style.removeProperty(name); });
+  persistRoamingTheme(null); // roam the reset too
   renderThemeSection();
 }
 
