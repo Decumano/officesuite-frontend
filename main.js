@@ -6,6 +6,16 @@ let newFileType = 'doc';
 let editorView = 'write';
 let saveTimer = null;
 let sheetData = {};
+// Multi-tab spreadsheets: each page owns a {ref: value} map; sheetData is
+// always an alias to the active page's map, so the whole grid/formula engine
+// keeps working unchanged. Serialized with a `# page name` heading per page;
+// formulas reference other tabs with the link-like syntax [Tab name](A1).
+let sheetPages = [{ name: 'Sheet 1', data: sheetData }];
+let sheetPageIdx = 0;
+// Set when the user switches tabs mid-formula: the next cell clicked on the
+// other tab is inserted into that pending formula as [Tab name](REF) and the
+// editor jumps back to where they were typing.
+let formulaPickCtx = null;
 let activeCell =
 {
   row: 1,
@@ -2344,6 +2354,7 @@ function glsAddCurrent()
 function openGlossaryEntryModal(id)
 {
   var e = id ? (glsData.entries||[]).find(function(x){ return x.id === id; }) : null;
+  if (e) noteItemAnchor('glossary-entry', e.id, e.word);
   var f =
     '<div class="dem-grid">' +
       '<label class="field-label">Word<input class="modal-input" id="gef-word" value="' + escAttr((e||{}).word||'') + '" placeholder="Word or phrase"></label>' +
@@ -2375,6 +2386,7 @@ function openGlossaryEntryModal(id)
 function openGlossaryRootModal(id)
 {
   var r = id ? (glsData.roots||[]).find(function(x){ return x.id === id; }) : null;
+  if (r) noteItemAnchor('glossary-root', r.id, r.form);
   var f =
     '<div class="dem-grid">' +
       '<label class="field-label">Form<input class="modal-input" id="grf-form" value="' + escAttr((r||{}).form||'') + '" placeholder="e.g. -ael, kron-"></label>' +
@@ -2510,6 +2522,7 @@ function renderBestiary()
 function openBeastModal(id)
 {
   var b = id ? (bstData.beasts||[]).find(function(x){ return x.id === id; }) : null;
+  if (b) noteItemAnchor('beast', b.id, b.name);
   var danger = (b||{}).danger || 1;
   var f =
     '<div class="dem-grid">' +
@@ -3140,6 +3153,7 @@ function calcEcoExchange()
 function openEcoCurrencyModal(id)
 {
   var c = id ? (ecoData.currencies||[]).find(function(x){ return x.id === id; }) : null;
+  if (c) noteItemAnchor('eco-currency', c.id, c.name);
   // Build exchange rate rows for this currency
   var xrHtml = '';
   if (id && ecoData.currencies.length > 1)
@@ -3207,6 +3221,7 @@ function openEcoCurrencyModal(id)
 function openEcoGoodModal(id)
 {
   var g = id ? (ecoData.tradeGoods||[]).find(function(x){ return x.id === id; }) : null;
+  if (g) noteItemAnchor('eco-good', g.id, g.name);
   var curOpts = (ecoData.currencies||[]).map(function(c){
     return '<option value="' + escAttr(c.id) + '"' + ((g&&g.priceCurrencyId===c.id)?' selected':'') + '>' + escHtml(c.name||'') + ' (' + escHtml(c.symbol||'') + ')</option>';
   }).join('');
@@ -3249,6 +3264,7 @@ function openEcoGoodModal(id)
 function openEcoRegionModal(id)
 {
   var r = id ? (ecoData.regions||[]).find(function(x){ return x.id === id; }) : null;
+  if (r) noteItemAnchor('eco-region', r.id, r.name);
   var curOpts = (ecoData.currencies||[]).map(function(c){
     return '<option value="' + escAttr(c.id) + '"' + ((r&&r.primaryCurrencyId===c.id)?' selected':'') + '>' + escHtml(c.name||'') + '</option>';
   }).join('');
@@ -3416,10 +3432,53 @@ function parseBlockDirectives(line)
 
 var checkboxRenderIndex = 0;
 
+// ── MATH (KaTeX) ──
+// LaTeX-style formulas in Documents: $inline$ and $$display$$ blocks render
+// through the vendored KaTeX build. Registered as marked tokenizers (not a
+// post-pass) so markdown emphasis rules never mangle the TeX source.
+
+function katexRenderTex(tex, displayMode)
+{
+  if (typeof katex === 'undefined')
+    return '<code>' + escHtml(tex) + '</code>';
+  try { return katex.renderToString(tex, { displayMode: displayMode, throwOnError: false }); }
+  catch(e) { return '<code>' + escHtml(tex) + '</code>'; }
+}
+
+var mathBlockExtension =
+{
+  name: 'mathBlock',
+  level: 'block',
+  start: function(src) { var i = src.indexOf('$$'); return i === -1 ? undefined : i; },
+  tokenizer: function(src)
+  {
+    var m = /^\$\$([\s\S]+?)\$\$/.exec(src);
+    if (m) return { type: 'mathBlock', raw: m[0], text: m[1].trim() };
+  },
+  renderer: function(token) { return '<div class="math-block">' + katexRenderTex(token.text, true) + '</div>\n'; }
+};
+
+var mathInlineExtension =
+{
+  name: 'mathInline',
+  level: 'inline',
+  start: function(src) { var i = src.indexOf('$'); return i === -1 ? undefined : i; },
+  tokenizer: function(src)
+  {
+    // Pandoc-style guard against currency ("$5 and $10"): the TeX must not
+    // start or end with whitespace, and the closing $ can't precede a digit.
+    var m = /^\$(?!\s)((?:\\\$|[^$\n])+?)\$(?!\d)/.exec(src);
+    if (m && !/\s$/.test(m[1])) return { type: 'mathInline', raw: m[0], text: m[1].replace(/\\\$/g, '$') };
+  },
+  renderer: function(token) { return katexRenderTex(token.text, false); }
+};
+
 function configureMarkedExtensions()
 {
   if (typeof marked === 'undefined')
     return;
+
+  marked.use({ extensions: [mathBlockExtension, mathInlineExtension] });
 
   marked.use
   (
@@ -4317,6 +4376,15 @@ function parseSheetCellsForEmbed(content)
       chartsMarker = cellLines.indexOf('```charts');
 
   if (chartsMarker !== -1) cellLines = cellLines.slice(0, chartsMarker);
+
+  // Multi-tab sheets: embeds show the FIRST page; a second `# name` heading
+  // ends it (the first heading, if any, is just that page's name).
+  var headingsSeen = 0, firstPageEnd = cellLines.length;
+  for (var li = 0; li < cellLines.length; li++)
+  {
+    if (cellLines[li].charAt(0) === '#' && ++headingsSeen === 2) { firstPageEnd = li; break; }
+  }
+  cellLines = cellLines.slice(0, firstPageEnd);
 
   cellLines.forEach(function(line)
   {
@@ -7655,6 +7723,35 @@ function cellMouseDown(mouseEvent, name)
   if (inp && !inp.readOnly)
     return;
 
+  // Cross-tab pick mode: a formula is pending on another tab; insert this
+  // cell as [Tab name](REF) into it and jump back to where it was typed.
+  if (formulaPickCtx && !editingCell)
+  {
+    mouseEvent.preventDefault();
+
+    var ctx = formulaPickCtx;
+    formulaPickCtx = null;
+
+    var srcPage = sheetPages[ctx.pageIdx];
+    if (!srcPage) return;
+
+    var refText = '[' + sheetPages[sheetPageIdx].name + '](' + name + ')',
+        srcVal = srcPage.data[ctx.ref] || '=',
+        insertAt = Math.min(ctx.insertStart, srcVal.length);
+
+    srcPage.data[ctx.ref] = srcVal.slice(0, insertAt) + refText + srcVal.slice(insertAt + ctx.insertLen);
+
+    var caretPos = insertAt + refText.length,
+        backRef = ctx.ref;
+
+    switchSheetPage(ctx.pageIdx);
+    enterEditMode(backRef);
+
+    var backInp = document.getElementById('inp-' + backRef);
+    if (backInp) backInp.setSelectionRange(caretPos, caretPos);
+    return;
+  }
+
   // While editing a formula, clicking/dragging other cells is a range
   // picker: it inserts the reference at the caret instead of navigating.
   if (editingCell && (sheetData[editingCell] || '').startsWith('='))
@@ -8936,6 +9033,52 @@ function applyFunctionPass(expr)
     );
 }
 
+// Evaluates a cell that lives on another tab: the whole formula engine reads
+// the global sheetData, so swap the alias for the duration of the call.
+function evalCellOnPage(page, ref, val)
+{
+  if (page.data === sheetData)
+    return evalCell(ref, val);
+
+  var saved = sheetData;
+  sheetData = page.data;
+  try { return evalCell(ref, val); }
+  finally { sheetData = saved; }
+}
+
+// Cross-tab references use the link-like syntax [Tab name](A1). Resolved
+// before anything else so they compose with functions: =SUM([Costs](B2), 5).
+// Unknown tab names come back as "#REF".
+function substitutePageRefs(exprText)
+{
+  return exprText.replace
+  (
+    /\[([^\]]+)\]\(\s*\$?([A-Z])\$?(\d+)\s*\)/g,
+    function(_, pageName, c, r)
+    {
+      var target = pageName.trim().toLowerCase();
+      var page = sheetPages.find(function(p){ return p.name.trim().toLowerCase() === target; });
+      if (!page)
+        return '"#REF"';
+
+      var ref = c + r,
+          v = page.data[ref];
+
+      if (v === undefined || v === '')
+        return '0';
+
+      if (v.startsWith('='))
+        v = evalCellOnPage(page, ref, v);
+
+      var upper = String(v).toUpperCase();
+      if (upper === 'TRUE' || upper === 'FALSE')
+        return upper.toLowerCase();
+
+      return isNaN(parseFloat(v)) ? JSON.stringify(v) : v;
+    }
+  );
+}
+
 function evalCell(ref, val)
 {
   if (!val || !val.startsWith('='))
@@ -8943,7 +9086,7 @@ function evalCell(ref, val)
 
   try
   {
-    var expr = val.slice(1),
+    var expr = substitutePageRefs(val.slice(1)),
         previous,
         iterations = 25;
 
@@ -9004,9 +9147,134 @@ function evaluateFormulas(skipRef)
   refreshSheetCharts();
 }
 
+// ── SHEET TABS (pages) ──
+
+function renderSheetPageTabs()
+{
+  var bar = document.getElementById('sheet-tabs');
+  if (!bar) return;
+
+  bar.innerHTML = sheetPages.map(function(p, i)
+  {
+    // mousedown-default is prevented so a mid-formula edit keeps focus while
+    // the user switches tabs to pick a cell from another page.
+    return '<div class="sheet-tab' + (i === sheetPageIdx ? ' active' : '') + '" onmousedown="event.preventDefault()" onclick="switchSheetPage(' + i + ')" ondblclick="renameSheetPage(' + i + ')" title="Double-click to rename">' +
+      escHtml(p.name) +
+      (sheetPages.length > 1 ? '<button class="sheet-tab-del" onclick="deleteSheetPage(event,' + i + ')" title="Delete tab">×</button>' : '') +
+    '</div>';
+  }).join('') +
+  '<button class="sheet-tab-add" onclick="addSheetPage()" title="New tab">+</button>' +
+  '<span class="sheet-tab-hint">' +
+    (formulaPickCtx
+      ? 'Click a cell to insert it into the formula on “' + escHtml(sheetPages[formulaPickCtx.pageIdx].name) + '”'
+      : 'Reference other tabs in formulas: [Tab name](A1)') +
+  '</span>';
+}
+
+function switchSheetPage(i)
+{
+  if (i === sheetPageIdx || !sheetPages[i]) return;
+
+  // Leaving a tab mid-edit: keep the typed value, and if it's a formula,
+  // arm pick mode so a cell click on the destination tab inserts a
+  // [Tab name](REF) reference and returns here (see cellMouseDown). The tab
+  // buttons prevent mousedown-default, so the editing input hasn't blurred.
+  var pickCtx = null;
+  if (editingCell)
+  {
+    var editInp = document.getElementById('inp-' + editingCell);
+    if (editInp)
+    {
+      sheetData[editingCell] = editInp.value;
+      if (editInp.value.startsWith('='))
+        pickCtx = { pageIdx: sheetPageIdx, ref: editingCell, insertStart: editInp.selectionStart, insertLen: 0 };
+      editInp.readOnly = true;
+    }
+    editingCell = null;
+  }
+
+  sheetPageIdx = i;
+  sheetData = sheetPages[i].data;
+  formulaPickCtx = pickCtx;
+  // Undo snapshots belong to the page they were taken on; restoring one onto
+  // a different page would corrupt it, so the stacks reset per page.
+  sheetUndoStack = [];
+  sheetRedoStack = [];
+
+  renderSheetPageTabs();
+  refreshAllCellDisplays();
+  selectCell('A1');
+  renderSheetCharts();
+}
+
+function uniqueSheetPageName(base, excludeIdx)
+{
+  var name = base, n = 2;
+  function taken(candidate)
+  {
+    return sheetPages.some(function(p, i){ return i !== excludeIdx && p.name.trim().toLowerCase() === candidate.trim().toLowerCase(); });
+  }
+  while (taken(name)) name = base + ' ' + n++;
+  return name;
+}
+
+function addSheetPage()
+{
+  var page = { name: uniqueSheetPageName('Sheet ' + (sheetPages.length + 1), -1), data: {} };
+  sheetPages.push(page);
+  switchSheetPage(sheetPages.length - 1);
+  saveSheetToFile();
+}
+
+function renameSheetPage(i)
+{
+  var page = sheetPages[i];
+  if (!page) return;
+
+  openDataModal
+  (
+    'Rename tab',
+    '<label class="field-label">Tab name<input class="modal-input" id="sheet-tab-name" value="' + escAttr(page.name) + '"></label>' +
+    '<div style="color:var(--text3);font-size:12px;margin-top:8px">Formulas on other tabs reference this one by name — e.g. [' + escHtml(page.name) + '](A1) — and don\'t update automatically when it changes.</div>',
+    function()
+    {
+      var name = document.getElementById('sheet-tab-name').value.trim();
+      if (!name) return;
+      page.name = uniqueSheetPageName(name, i);
+      closeDataModal();
+      renderSheetPageTabs();
+      refreshAllCellDisplays(); // refs to the old name now show #REF
+      saveSheetToFile();
+    }
+  );
+}
+
+function deleteSheetPage(e, i)
+{
+  e.stopPropagation();
+  if (sheetPages.length <= 1) return;
+  if (!confirm('Delete tab "' + sheetPages[i].name + '" and everything on it?')) return;
+
+  sheetPages.splice(i, 1);
+  if (sheetPageIdx >= sheetPages.length) sheetPageIdx = sheetPages.length - 1;
+  else if (i < sheetPageIdx) sheetPageIdx--;
+
+  sheetData = sheetPages[sheetPageIdx].data;
+  sheetUndoStack = [];
+  sheetRedoStack = [];
+
+  renderSheetPageTabs();
+  refreshAllCellDisplays();
+  selectCell('A1');
+  renderSheetCharts();
+  saveSheetToFile();
+}
+
 function loadSheetFile(f)
 {
   sheetData = {};
+  sheetPages = [];
+  sheetPageIdx = 0;
   sheetCharts = [];
   sheetUndoStack = [];
   sheetRedoStack = [];
@@ -9047,6 +9315,8 @@ function loadSheetFile(f)
     cellLines = cellLines.slice(0, chartsMarker);
   }
 
+  var curPage = null;
+
   cellLines.forEach
   (
     function(line)
@@ -9054,10 +9324,25 @@ function loadSheetFile(f)
       if(!line.trim())
         return;
 
+      // `# name` starts a new tab/page. Files from before multi-tab support
+      // have no heading and fall into an implicit first page below.
+      if (line.charAt(0) === '#')
+      {
+        curPage = { name: line.replace(/^#+\s*/, '').trim() || ('Sheet ' + (sheetPages.length + 1)), data: {} };
+        sheetPages.push(curPage);
+        return;
+      }
+
       var refEnd = line.indexOf('=');
 
       if(refEnd === -1)
         return;
+
+      if (!curPage)
+      {
+        curPage = { name: 'Sheet 1', data: {} };
+        sheetPages.push(curPage);
+      }
 
       var ref = line.slice(0, refEnd),
           rest = line.slice(refEnd + 1),
@@ -9065,10 +9350,17 @@ function loadSheetFile(f)
 
       // Formula cells are written as ref=formula=result; the result is informational
       // (recomputed on load), so only the formula half is kept, with '=' restored.
-      sheetData[ref] = (formulaEnd === -1) ? rest : ('=' + rest.slice(0, formulaEnd));
+      curPage.data[ref] = (formulaEnd === -1) ? rest : ('=' + rest.slice(0, formulaEnd));
     }
   );
 
+  if (!sheetPages.length)
+    sheetPages = [{ name: 'Sheet 1', data: {} }];
+
+  sheetPageIdx = 0;
+  sheetData = sheetPages[0].data;
+
+  renderSheetPageTabs();
   refreshAllCellDisplays();
   selectCell('A1');
   renderSheetCharts();
@@ -9115,6 +9407,7 @@ function sheetRestoreSnapshot(fromStack, toStack)
   var snap = fromStack.pop();
 
   sheetData = snap.data;
+  sheetPages[sheetPageIdx].data = sheetData; // keep the page alias in sync
   sheetCharts = snap.charts;
 
   // Mid-edit cell state belongs to whatever was being typed, which the
@@ -9156,23 +9449,29 @@ function saveSheetToFile()
 
   var out = '---\ntype: spreadsheet\n---\n\n';
 
-  for (var i = 1; i <= ROWS; i++)
+  sheetPages.forEach(function(page, p)
   {
-    for (var j = 0; j < COLS; j++)
+    if (p > 0) out += '\n';
+    out += '# ' + page.name + '\n';
+
+    for (var i = 1; i <= ROWS; i++)
     {
-      var ref = colName(j) + i,
-          val = sheetData[ref];
+      for (var j = 0; j < COLS; j++)
+      {
+        var ref = colName(j) + i,
+            val = page.data[ref];
 
-      if (!val)
-        continue;
+        if (!val)
+          continue;
 
-      out += val.startsWith('=')
-              ?
-                ref + '=' + val.slice(1) + '=' + evalCell(ref, val) + '\n'
-              :
-                ref + '=' + val + '\n';
+        out += val.startsWith('=')
+                ?
+                  ref + '=' + val.slice(1) + '=' + evalCellOnPage(page, ref, val) + '\n'
+                :
+                  ref + '=' + val + '\n';
+      }
     }
-  }
+  });
 
   if (sheetCharts.length)
     out += '\n```charts\n' + JSON.stringify(sheetCharts) + '\n```\n';
@@ -10869,42 +11168,57 @@ function buildDocExportHtml(file)
 
 function buildSheetExportHtml(file)
 {
-  var maxRow = 0,
-      maxCol = 0;
+  var sections = '',
+      savedData = sheetData;
 
-  Object.keys(sheetData).forEach
-  (
-    function(ref)
-    {
-      var parsed = parseName(ref);
-
-      if (!parsed)
-        return;
-
-      maxRow = Math.max(maxRow, parsed.row);
-      maxCol = Math.max(maxCol, colIndex(parsed.col));
-    }
-  );
-
-  var rowsHtml = '';
-
-  for (var r = 1; r <= maxRow; r++)
+  sheetPages.forEach(function(page)
   {
-    rowsHtml += '<tr>';
+    // The display/eval helpers read the global sheetData; point it at each
+    // page in turn while its table is built.
+    sheetData = page.data;
 
-    for (var c = 0; c <= maxCol; c++)
-      rowsHtml += '<td>' + escHtml(getDisplayValue(colName(c) + r)) + '</td>';
+    var maxRow = 0,
+        maxCol = 0;
 
-    rowsHtml += '</tr>\n';
-  }
+    Object.keys(page.data).forEach
+    (
+      function(ref)
+      {
+        var parsed = parseName(ref);
 
-  var tableHtml = maxRow
-                  ?
-                    '<table>\n<tbody>\n' + rowsHtml + '</tbody>\n</table>'
-                  :
-                    '<p>This spreadsheet is empty.</p>';
+        if (!parsed)
+          return;
 
-  return wrapExportHtml(file.name, '<h1>' + escHtml(file.name) + '</h1>\n' + tableHtml);
+        maxRow = Math.max(maxRow, parsed.row);
+        maxCol = Math.max(maxCol, colIndex(parsed.col));
+      }
+    );
+
+    var rowsHtml = '';
+
+    for (var r = 1; r <= maxRow; r++)
+    {
+      rowsHtml += '<tr>';
+
+      for (var c = 0; c <= maxCol; c++)
+        rowsHtml += '<td>' + escHtml(getDisplayValue(colName(c) + r)) + '</td>';
+
+      rowsHtml += '</tr>\n';
+    }
+
+    if (sheetPages.length > 1)
+      sections += '<h2>' + escHtml(page.name) + '</h2>\n';
+
+    sections += maxRow
+                ?
+                  '<table>\n<tbody>\n' + rowsHtml + '</tbody>\n</table>\n'
+                :
+                  '<p>This tab is empty.</p>\n';
+  });
+
+  sheetData = savedData;
+
+  return wrapExportHtml(file.name, '<h1>' + escHtml(file.name) + '</h1>\n' + sections);
 }
 
 // Mermaid's library isn't shipped inside exported files, so any `.mermaid`
@@ -11580,14 +11894,19 @@ async function submitShare()
   }
 }
 
-// ── Comments (Documents only) ──
+// ── Comments (any work file; anchors point at a spot inside it) ──
 
 var commentsVisible = false;
+var commentsPollTimer = null;
+var lastCommentCount = -1;
+var pendingAnchor = null;          // captured when the composer gains focus
+var lastItemAnchor = null;         // { fileId, kind, id, label } — last opened item modal
+var commentAnchorRegistry = {};    // commentId -> parsed anchor (for click-to-navigate)
 
 function commentTarget()
 {
   if (Platform.isNative) return null;
-  if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'doc') return null;
+  if (!currentFileId || !files[currentFileId]) return null;
   if (sharedCtx && sharedCtx.link) return { link: sharedCtx.link, subPath: sharedCtx.subPath };
   if (sharedCtx) return { share: sharedCtx.shareId, subPath: sharedCtx.subPath };
   if (!workFolderRoot) return null; // not logged in / no workspace
@@ -11596,39 +11915,168 @@ function commentTarget()
 
 function updateCommentsUI()
 {
-  var btn = document.getElementById('comments-btn');
-  if (!btn) return;
+  var fab = document.getElementById('comments-fab');
+  if (!fab) return;
   var target = commentTarget();
-  btn.style.display = target ? '' : 'none';
+  fab.style.display = (target && !commentsVisible) ? '' : 'none';
   if (!target)
   {
     commentsVisible = false;
     document.getElementById('comments-panel').style.display = 'none';
+    stopCommentsPolling();
     return;
   }
+  startCommentsPolling();
+  lastCommentCount = -1;
   if (commentsVisible) refreshComments();
   else refreshCommentsCount();
+}
+
+function startCommentsPolling()
+{
+  if (commentsPollTimer) return;
+  commentsPollTimer = setInterval(function()
+  {
+    if (!commentTarget()) { stopCommentsPolling(); return; }
+    if (commentsVisible) refreshComments();
+    else refreshCommentsCount();
+  }, 7000);
+}
+
+function stopCommentsPolling()
+{
+  if (!commentsPollTimer) return;
+  clearInterval(commentsPollTimer);
+  commentsPollTimer = null;
 }
 
 function toggleCommentsPanel()
 {
   commentsVisible = !commentsVisible;
   document.getElementById('comments-panel').style.display = commentsVisible ? 'flex' : 'none';
-  if (commentsVisible) refreshComments();
+  var fab = document.getElementById('comments-fab');
+  if (fab) fab.style.display = (!commentsVisible && commentTarget()) ? '' : 'none';
+  if (commentsVisible) { lastCommentCount = -1; refreshComments(); }
+}
+
+function setCommentsBadge(n)
+{
+  var badge = document.getElementById('comments-count');
+  if (!badge) return;
+  badge.textContent = n;
+  badge.style.display = n ? '' : 'none';
 }
 
 async function refreshCommentsCount()
 {
   var target = commentTarget();
-  var badge = document.getElementById('comments-count');
-  if (!target || !badge) return;
-  try
+  if (!target) return;
+  try { setCommentsBadge((await Platform.listComments(target)).length); }
+  catch(e) {}
+}
+
+// ── Comment anchors ──
+
+function noteItemAnchor(kind, id, label)
+{
+  lastItemAnchor = { fileId: currentFileId, kind: kind, id: id, label: label };
+}
+
+function captureCommentAnchor()
+{
+  var f = currentFileId && files[currentFileId];
+  if (!f) return;
+
+  var a = null;
+
+  if (f.type === 'doc')
   {
-    var comments = await Platform.listComments(target);
-    badge.textContent = comments.length;
-    badge.style.display = comments.length ? '' : 'none';
+    var ed = document.getElementById('editor');
+    if (ed && ed.selectionStart !== ed.selectionEnd)
+    {
+      var s = ed.selectionStart, e = ed.selectionEnd;
+      a = { t: 'text', s: s, e: e, x: ed.value.slice(s, e).slice(0, 120) };
+    }
   }
-  catch(e) { badge.style.display = 'none'; }
+  else if (f.type === 'sheet')
+  {
+    if (selectionAnchor)
+      a = {
+        t: 'cells',
+        p: sheetPages[sheetPageIdx].name,
+        r: (selectionAnchor === selectionEnd || !selectionEnd) ? selectionAnchor : (selectionAnchor + ':' + selectionEnd)
+      };
+  }
+  else if (f.type !== 'graph' && f.type !== 'notebook' && lastItemAnchor && lastItemAnchor.fileId === currentFileId)
+    a = { t: 'item', k: lastItemAnchor.kind, id: lastItemAnchor.id, x: lastItemAnchor.label };
+
+  pendingAnchor = a;
+  renderPendingAnchor();
+}
+
+function clearPendingAnchor()
+{
+  pendingAnchor = null;
+  renderPendingAnchor();
+}
+
+function anchorLabel(a)
+{
+  if (!a) return '';
+  if (a.t === 'text')  return '“' + (a.x || '').slice(0, 40) + ((a.x || '').length > 40 ? '…' : '') + '”';
+  if (a.t === 'cells') return a.p + ' · ' + a.r;
+  if (a.t === 'item')  return a.x || 'item';
+  return '';
+}
+
+function renderPendingAnchor()
+{
+  var chip = document.getElementById('comment-anchor-chip');
+  if (!chip) return;
+  if (!pendingAnchor) { chip.style.display = 'none'; chip.innerHTML = ''; return; }
+  chip.style.display = '';
+  chip.innerHTML = '<span class="comment-anchor">📍 ' + escHtml(anchorLabel(pendingAnchor)) + '</span>' +
+    '<button class="gls-card-del" style="position:static" onclick="clearPendingAnchor()" title="Comment on the whole file instead">×</button>';
+}
+
+function gotoCommentAnchor(commentId)
+{
+  var a = commentAnchorRegistry[commentId];
+  var f = currentFileId && files[currentFileId];
+  if (!a || !f) return;
+
+  if (a.t === 'text' && f.type === 'doc')
+  {
+    var ed = document.getElementById('editor');
+    if (!ed) return;
+    // The stored offsets drift as the doc is edited; re-find the excerpt and
+    // fall back to the offsets when it's gone.
+    var idx = a.x ? ed.value.indexOf(a.x) : -1;
+    var s = idx !== -1 ? idx : Math.min(a.s || 0, ed.value.length),
+        e = idx !== -1 ? idx + a.x.length : Math.min(a.e || 0, ed.value.length);
+    ed.focus();
+    ed.setSelectionRange(s, e);
+    var totalLines = ed.value.split('\n').length - 1;
+    var frac = totalLines ? (ed.value.slice(0, s).split('\n').length - 1) / totalLines : 0;
+    ed.scrollTop = frac * Math.max(0, ed.scrollHeight - ed.clientHeight);
+  }
+  else if (a.t === 'cells' && f.type === 'sheet')
+  {
+    var pi = sheetPages.findIndex(function(p){ return p.name === a.p; });
+    if (pi !== -1 && pi !== sheetPageIdx) switchSheetPage(pi);
+    var parts = (a.r || 'A1').split(':');
+    selectCell(parts[0]);
+    if (parts[1]) { selectionEnd = parts[1]; renderRangeSelection(); }
+  }
+  else if (a.t === 'item')
+  {
+    if (a.k === 'glossary-entry')      { switchGlossaryTab('words'); openGlossaryEntryModal(a.id); }
+    else if (a.k === 'glossary-root')  { switchGlossaryTab('roots'); openGlossaryRootModal(a.id); }
+    else if (a.k === 'beast')          openBeastModal(a.id);
+    else if (a.k === 'eco-currency')   openEcoCurrencyModal(a.id);
+    else if (a.k === 'eco-good')       openEcoGoodModal(a.id);
+    else if (a.k === 'eco-region')     openEcoRegionModal(a.id);
+  }
 }
 
 async function refreshComments()
@@ -11649,28 +12097,40 @@ async function refreshComments()
     return;
   }
 
-  var badge = document.getElementById('comments-count');
-  if (badge)
-  {
-    badge.textContent = comments.length;
-    badge.style.display = comments.length ? '' : 'none';
-  }
+  setCommentsBadge(comments.length);
 
+  commentAnchorRegistry = {};
   listEl.innerHTML = comments.length
     ? comments.map(function(c){
         var when = new Date(c.createdAt).toLocaleString();
+        var anchorHtml = '';
+        if (c.anchor)
+        {
+          try
+          {
+            var a = JSON.parse(c.anchor);
+            commentAnchorRegistry[c.id] = a;
+            anchorHtml = '<button class="comment-anchor comment-anchor-link" onclick="gotoCommentAnchor(&quot;' + escAttr(c.id) + '&quot;)" title="Jump to this spot">📍 ' + escHtml(anchorLabel(a)) + '</button>';
+          }
+          catch(e) {}
+        }
         return '<div class="comment-item">' +
           '<div class="comment-meta">' +
             '<span class="comment-author">' + escHtml(c.authorEmail || 'Anonymous') + '</span>' +
             '<span class="comment-when">' + escHtml(when) + '</span>' +
-            (c.mine ? '<button class="gls-card-del" style="position:static" onclick="removeComment(\'' + escAttr(c.id) + '\')" title="Delete">×</button>' : '') +
+            (c.mine ? '<button class="gls-card-del" style="position:static" onclick="removeComment(&quot;' + escAttr(c.id) + '&quot;)" title="Delete">×</button>' : '') +
           '</div>' +
+          anchorHtml +
           '<div class="comment-body">' + escHtml(c.body) + '</div>' +
         '</div>';
       }).join('')
     : '<div class="comments-empty">No comments yet.</div>';
 
-  listEl.scrollTop = listEl.scrollHeight;
+  // Only jump to the newest comment when something actually arrived, so the
+  // live refresh never yanks the scroll position mid-read.
+  if (comments.length !== lastCommentCount)
+    listEl.scrollTop = listEl.scrollHeight;
+  lastCommentCount = comments.length;
 }
 
 async function submitComment()
@@ -11680,8 +12140,10 @@ async function submitComment()
   if (!target || !input.value.trim()) return;
   try
   {
-    await Platform.addComment(target, input.value.trim());
+    await Platform.addComment(target, input.value.trim(), pendingAnchor ? JSON.stringify(pendingAnchor) : null);
     input.value = '';
+    clearPendingAnchor();
+    lastCommentCount = -1; // force the scroll-to-newest on the next render
     refreshComments();
   }
   catch(e)
@@ -11695,5 +12157,6 @@ async function removeComment(id)
   try { await Platform.deleteComment(id); } catch(e) {}
   refreshComments();
 }
+
 
 init();
