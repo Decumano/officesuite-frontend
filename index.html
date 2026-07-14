@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lore Keep</title>
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
   <div id="auth-gate" style="position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;background:#14161a;font-family:system-ui,sans-serif;">
@@ -171,7 +171,6 @@
             <button class="tb-btn" title="Font…" onclick="applyFont()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4,7 4,4 20,4 20,7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></button>
           </div>
           <div class="toolbar-title" id="toolbar-title"><span>No document open</span></div>
-          <button class="tb-btn" id="comments-btn" style="display:none" title="Comments" onclick="toggleCommentsPanel()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span id="comments-count" class="comments-count" style="display:none"></span></button>
           <button class="tb-btn" title="Version history" onclick="openHistoryModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12,7 12,12 16,14"/></svg></button>
           <div class="view-toggle">
             <button class="view-btn active" id="vbtn-write" onclick="setView('write')" title="Write"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
@@ -223,6 +222,7 @@
           <table id="sheet-grid"><thead id="sheet-head"></thead><tbody id="sheet-body"></tbody></table>
           <div id="sheet-charts-layer"></div>
         </div>
+        <div id="sheet-tabs"></div>
       </div>
 
       <!-- GRAPH APP -->
@@ -861,12 +861,18 @@
     window.pdfjsLib = pdfjsLib;
   </script>
   <script src="vendor/mermaid.min.js"></script>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/chart.umd.js"></script>
-  <script type="text/javascript" src="platform.js?v=5"></script>
+  <script type="text/javascript" src="platform.js?v=7"></script>
   <!-- Shared-file banner (fixed, web only) -->
   <div id="view-only-banner" style="display:none"></div>
 
-  <!-- Comments panel (Documents only, web only) -->
+  <!-- Comments (any open work file, web only) -->
+  <button id="comments-fab" style="display:none" title="Comments" onclick="toggleCommentsPanel()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    <span id="comments-count" class="comments-count" style="display:none"></span>
+  </button>
   <div id="comments-panel" style="display:none">
     <div class="comments-head">
       <span>Comments</span>
@@ -874,7 +880,8 @@
     </div>
     <div id="comments-list"></div>
     <div class="comments-compose" id="comments-compose">
-      <textarea id="comment-input" rows="3" placeholder="Add a comment…"></textarea>
+      <div id="comment-anchor-chip" class="comment-anchor-chip" style="display:none"></div>
+      <textarea id="comment-input" rows="3" placeholder="Add a comment… (select something first to comment on that spot)" onfocus="captureCommentAnchor()"></textarea>
       <button class="btn-create" onclick="submitComment()">Post</button>
     </div>
     <div class="comments-no-perm" id="comments-no-perm" style="display:none">You can view this thread but not post in it.</div>
@@ -911,7 +918,7 @@
     </div>
   </div>
 
-  <script type="text/javascript" src="auth-gate.js?v=5"></script>
+  <script type="text/javascript" src="auth-gate.js?v=7"></script>
 
   <!-- TRAVEL DETAIL POPOVER -->
   <div id="travel-popover" style="display:none;position:fixed;z-index:901;min-width:300px;max-width:360px;">

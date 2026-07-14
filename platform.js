@@ -251,13 +251,14 @@ var Platform = (function () {
     return apiJson('/comments?' + commentQs(target));
   }
 
-  function addComment(target, body) {
+  function addComment(target, body, anchor) {
     if (tauri) return webOnly();
     var payload = target.link
       ? { link: target.link, subPath: target.subPath || '', body: body }
       : target.share
         ? { share: target.share, subPath: target.subPath || '', body: body }
         : { path: target.path, body: body };
+    if (anchor) payload.anchor = anchor;
     return apiJson('/comments', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
