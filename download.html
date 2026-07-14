@@ -89,8 +89,34 @@
       document.getElementById('fallback').style.display = 'block';
     }
 
-    fetch('https://api.github.com/repos/' + DESKTOP_REPO + '/releases/latest')
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    // Prefer this server's own bridge (/api/downloads/latest): it works even
+    // when the GitHub repo is private (the server holds the token; see
+    // GITHUB_RELEASES_TOKEN) and streams the assets itself. Fall back to the
+    // public GitHub API for instances without the bridge configured.
+    function fetchRelease() {
+      return fetch('/api/downloads/latest')
+        .then(function (r) { if (!r.ok) throw new Error('bridge: HTTP ' + r.status); return r.json(); })
+        .then(function (rel) {
+          return {
+            tag_name: rel.tagName,
+            published_at: rel.publishedAt,
+            html_url: null,
+            assets: (rel.assets || []).map(function (a) {
+              return {
+                name: a.name,
+                size: a.size,
+                browser_download_url: '/api/downloads/asset/' + a.id + '/' + encodeURIComponent(a.name)
+              };
+            })
+          };
+        })
+        .catch(function () {
+          return fetch('https://api.github.com/repos/' + DESKTOP_REPO + '/releases/latest')
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+        });
+    }
+
+    fetchRelease()
       .then(function (release) {
         var groups = { Windows: [], Linux: [], macOS: [] };
         (release.assets || []).forEach(function (asset) {
