@@ -7538,6 +7538,9 @@ function pasteTSVAt(anchorRef, text)
           var col = startCol + c,
               row = startRow + r;
 
+          // Pasted blocks push the grid outward instead of being clipped.
+          ensureGridFits(row, col);
+
           if (col >= COLS || row > ROWS)
             return;
 
@@ -7631,27 +7634,120 @@ function buildSheet()
               '</th>';
 
     for (var j = 0; j < COLS; j++)
-    {
-      var ref = colName(j) + i;
-      html += '<td id="cell-' + ref + '" onmousedown="cellMouseDown(event,\'' + ref + '\')" onmouseenter="cellMouseEnter(\'' + ref + '\')" ondblclick="cellDblClick(\'' + ref + '\')">'+
-                '<input class="cell-input" id="inp-' + ref + '" value="" readonly onkeydown="cellKey(event, \'' + ref + '\')" onfocus="onCellFocus(\'' + ref + '\')" oninput="onCellInput(\'' + ref + '\')" onblur="onCellBlur(\'' + ref + '\')">'+
-              '</td>';
-    }
-    
+      html += sheetCellHtml(colName(j) + i);
+
     html += '</tr>';
   }
 
   document.getElementById('sheet-body').innerHTML = html;
 }
 
+function sheetCellHtml(ref)
+{
+  return '<td id="cell-' + ref + '" onmousedown="cellMouseDown(event,\'' + ref + '\')" onmouseenter="cellMouseEnter(\'' + ref + '\')" ondblclick="cellDblClick(\'' + ref + '\')">'+
+           '<input class="cell-input" id="inp-' + ref + '" value="" readonly onkeydown="cellKey(event, \'' + ref + '\')" onfocus="onCellFocus(\'' + ref + '\')" oninput="onCellInput(\'' + ref + '\')" onblur="onCellBlur(\'' + ref + '\')">'+
+         '</td>';
+}
+
+// ── GRID GROWTH ──
+// The grid isn't fixed-size: whenever content or the selection gets close to
+// an edge, more rows/columns are appended (chunked, to keep DOM churn low).
+// Columns run past Z into two-letter names, up to ZZ.
+
+var MAX_SHEET_COLS = 702; // "ZZ"
+var GROW_ROW_CHUNK = 12;
+var GROW_COL_CHUNK = 4;
+
+function growSheetGrid(targetRows, targetCols)
+{
+  targetCols = Math.min(targetCols, MAX_SHEET_COLS);
+  if (targetRows <= ROWS && targetCols <= COLS)
+    return;
+
+  var head = document.getElementById('sheet-head'),
+      body = document.getElementById('sheet-body');
+
+  if (!head || !body || !head.rows.length)
+  {
+    ROWS = Math.max(ROWS, targetRows);
+    COLS = Math.max(COLS, targetCols);
+    return;
+  }
+
+  // New columns first: header cell plus a td on every existing row, so the
+  // new rows below are built at the full width.
+  if (targetCols > COLS)
+  {
+    var headRow = head.rows[0];
+    for (var j = COLS; j < targetCols; j++)
+    {
+      var th = document.createElement('th');
+      th.className = 'col-header';
+      th.textContent = colName(j);
+      headRow.appendChild(th);
+    }
+    for (var r = 0; r < body.rows.length; r++)
+    {
+      var rowNum = r + 1, cells = '';
+      for (var jj = COLS; jj < targetCols; jj++)
+        cells += sheetCellHtml(colName(jj) + rowNum);
+      body.rows[r].insertAdjacentHTML('beforeend', cells);
+    }
+    COLS = targetCols;
+  }
+
+  if (targetRows > ROWS)
+  {
+    var html = '';
+    for (var i = ROWS + 1; i <= targetRows; i++)
+    {
+      html += '<tr><th class="row-header" style="position: sticky; left: 0; z-index: 1;">' + i + '</th>';
+      for (var j2 = 0; j2 < COLS; j2++)
+        html += sheetCellHtml(colName(j2) + i);
+      html += '</tr>';
+    }
+    body.insertAdjacentHTML('beforeend', html);
+    ROWS = targetRows;
+  }
+}
+
+/// Grows the grid so (row, col) sits comfortably inside it — being within a
+/// couple of cells of an edge already triggers the next chunk.
+function ensureGridFits(row, col)
+{
+  var targetRows = ROWS, targetCols = COLS;
+  while (row > targetRows - 3) targetRows += GROW_ROW_CHUNK;
+  while (col > targetCols - 3 && targetCols < MAX_SHEET_COLS) targetCols += GROW_COL_CHUNK;
+  growSheetGrid(targetRows, targetCols);
+}
+
+function ensureGridFitsData(data)
+{
+  var maxRow = 0, maxCol = 0;
+  Object.keys(data || {}).forEach(function(ref)
+  {
+    var p = parseName(ref);
+    if (!p) return;
+    if (p.row > maxRow) maxRow = p.row;
+    var ci = colIndex(p.col);
+    if (ci > maxCol) maxCol = ci;
+  });
+  if (maxRow || maxCol) ensureGridFits(maxRow, maxCol);
+}
+
+// Bijective base-26 column names: 0..25 = A..Z, 26 = AA, 27 = AB, … 701 = ZZ.
 function colName(i)
 {
-    return String.fromCharCode(65 + i);
+    if (i < 26)
+      return String.fromCharCode(65 + i);
+    return String.fromCharCode(65 + Math.floor(i / 26) - 1) + String.fromCharCode(65 + (i % 26));
 }
 
 function colIndex(name)
 {
-    return name.charCodeAt(0) - 65;
+    if (name.length === 1)
+      return name.charCodeAt(0) - 65;
+    return (name.charCodeAt(0) - 65 + 1) * 26 + (name.charCodeAt(1) - 65);
 }
 
 function parseName(cellReference)
@@ -7696,6 +7792,9 @@ function selectCell(name)
     row: parsedName.row,
     col: colIndex(parsedName.col)
   };
+
+  // Selection moving near an edge pulls more rows/columns into existence.
+  ensureGridFits(activeCell.row, activeCell.col);
 
   selectionAnchor = name;
   selectionEnd = name;
@@ -8014,7 +8113,7 @@ function shiftFormulaRefs(formulaText, rowDelta, colDelta)
 {
   return formulaText.replace
   (
-    /(?<![A-Za-z])(\$?)([A-Z])(\$?)(\d+)/g,
+    /(?<![A-Za-z])(\$?)([A-Z]{1,2})(\$?)(\d+)/g,
     function(match, colAbs, col, rowAbs, row)
     {
       var newCol = colAbs ? colIndex(col) : colIndex(col) + colDelta,
@@ -8643,7 +8742,7 @@ function substituteCellRefs(exprText)
 {
   return exprText.replace
   (
-    /(?<![A-Za-z])\$?([A-Z])\$?(\d+)/g,
+    /(?<![A-Za-z])\$?([A-Z]{1,2})\$?(\d+)/g,
     function(_, c, r)
     {
       var ref = c + r,
@@ -9053,7 +9152,7 @@ function substitutePageRefs(exprText)
 {
   return exprText.replace
   (
-    /\[([^\]]+)\]\(\s*\$?([A-Z])\$?(\d+)\s*\)/g,
+    /\[([^\]]+)\]\(\s*\$?([A-Z]{1,2})\$?(\d+)\s*\)/g,
     function(_, pageName, c, r)
     {
       var target = pageName.trim().toLowerCase();
@@ -9202,6 +9301,7 @@ function switchSheetPage(i)
   sheetRedoStack = [];
 
   renderSheetPageTabs();
+  ensureGridFitsData(sheetData);
   refreshAllCellDisplays();
   selectCell('A1');
   renderSheetCharts();
@@ -9361,6 +9461,7 @@ function loadSheetFile(f)
   sheetData = sheetPages[0].data;
 
   renderSheetPageTabs();
+  ensureGridFitsData(sheetData);
   refreshAllCellDisplays();
   selectCell('A1');
   renderSheetCharts();
@@ -9409,6 +9510,7 @@ function sheetRestoreSnapshot(fromStack, toStack)
   sheetData = snap.data;
   sheetPages[sheetPageIdx].data = sheetData; // keep the page alias in sync
   sheetCharts = snap.charts;
+  ensureGridFitsData(sheetData);
 
   // Mid-edit cell state belongs to whatever was being typed, which the
   // snapshot doesn't track - drop back to read-only rather than leaving a
@@ -9454,23 +9556,22 @@ function saveSheetToFile()
     if (p > 0) out += '\n';
     out += '# ' + page.name + '\n';
 
-    for (var i = 1; i <= ROWS; i++)
-    {
-      for (var j = 0; j < COLS; j++)
+    // Iterate the page's own cells (row-major) rather than the grid bounds:
+    // the grid is sized for the ACTIVE page, and clipping another page's
+    // far-out cells to it would silently drop them from the file.
+    Object.keys(page.data)
+      .map(function(ref){ return { ref: ref, at: parseName(ref) }; })
+      .filter(function(c){ return c.at && page.data[c.ref]; })
+      .sort(function(a, b){ return a.at.row - b.at.row || colIndex(a.at.col) - colIndex(b.at.col); })
+      .forEach(function(c)
       {
-        var ref = colName(j) + i,
-            val = page.data[ref];
-
-        if (!val)
-          continue;
-
+        var val = page.data[c.ref];
         out += val.startsWith('=')
                 ?
-                  ref + '=' + val.slice(1) + '=' + evalCellOnPage(page, ref, val) + '\n'
+                  c.ref + '=' + val.slice(1) + '=' + evalCellOnPage(page, c.ref, val) + '\n'
                 :
-                  ref + '=' + val + '\n';
-      }
-    }
+                  c.ref + '=' + val + '\n';
+      });
   });
 
   if (sheetCharts.length)
