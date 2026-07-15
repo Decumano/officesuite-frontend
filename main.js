@@ -217,6 +217,7 @@ async function init()
   {
     await loadWorkFolderTree();
     await loadBacklinksIndex();
+    injectCustomFontsStyle(); // fire-and-forget: doesn't block first paint
     if (linkToken) await initLinkAccess(linkToken);
     return;
   }
@@ -4646,6 +4647,11 @@ async function getAvailableFonts()
 
   var names = null;
 
+  // queryLocalFonts() only exists in a secure context (HTTPS, or literally
+  // "localhost") in Chromium browsers, so on a plain-http deployment - or
+  // any non-Chromium browser - this silently has nothing to offer; the
+  // account's uploaded fonts (merged in below) are the reliable path that
+  // works the same way everywhere.
   if (typeof window.queryLocalFonts === 'function')
   {
     try
@@ -4673,8 +4679,21 @@ async function getAvailableFonts()
     }
   }
 
-  cachedFontList = (names && names.length) ? names : FALLBACK_FONT_LIST.slice();
+  var baseNames = (names && names.length) ? names : FALLBACK_FONT_LIST.slice();
 
+  if (customFontsCache === null) await refreshCustomFonts();
+  var customNames = (customFontsCache || []).map(function(f){ return f.familyName; });
+
+  // Custom (uploaded, always-renders-correctly) fonts first, then whatever
+  // the OS/fallback list contributed, deduped.
+  var seenNames = {}, merged = [];
+  customNames.concat(baseNames).forEach(function(n)
+  {
+    var key = n.toLowerCase();
+    if (!seenNames[key]) { seenNames[key] = true; merged.push(n); }
+  });
+
+  cachedFontList = merged;
   return cachedFontList;
 }
 
@@ -10874,6 +10893,9 @@ function openSettingsModal()
   renderSettingsModal();
   document.getElementById('settings-modal').classList.add('open');
   refreshCloudStatus();
+
+  if (!Platform.isNative)
+    refreshCustomFonts().then(renderCustomFontsSection);
 }
 
 function closeSettingsModal()
@@ -10901,6 +10923,116 @@ function renderSettingsModal()
 
   renderThemeSection();
   renderCloudSyncSection();
+  renderCustomFontsSection();
+}
+
+// ── CUSTOM FONTS ──
+// Account-level fonts (server: src/fonts.rs). Unlike the picker's
+// queryLocalFonts() path (Chromium + secure-context only, and dependent on
+// whatever happens to be installed on THIS device), an uploaded font is
+// served as a real asset and always renders the same way for every viewer,
+// in the live editor and in exported PDFs (see embed_account_fonts_style
+// server-side and buildDocExportHtml's use of injectedFontStyleTag below).
+
+var customFontsCache = null; // [{id, familyName, contentType, byteSize}]
+
+async function refreshCustomFonts()
+{
+  customFontsCache = await Platform.listCustomFonts();
+  return customFontsCache;
+}
+
+async function injectCustomFontsStyle()
+{
+  if (!customFontsCache) await refreshCustomFonts();
+
+  var tag = document.getElementById('custom-fonts-style');
+  if (!tag)
+  {
+    tag = document.createElement('style');
+    tag.id = 'custom-fonts-style';
+    document.head.appendChild(tag);
+  }
+
+  var rules = await Promise.all((customFontsCache || []).map(async function(f)
+  {
+    var url = await Platform.customFontDataUrl(f.id);
+    var format = f.contentType.indexOf('woff2') !== -1 ? 'woff2'
+               : f.contentType.indexOf('woff') !== -1  ? 'woff'
+               : f.contentType.indexOf('otf') !== -1   ? 'opentype'
+               : 'truetype';
+    return "@font-face{font-family:'" + f.familyName.replace(/'/g, '') + "';src:url('" + url + "') format('" + format + "');}";
+  }));
+
+  tag.textContent = rules.join('\n');
+}
+
+function renderCustomFontsSection()
+{
+  var section = document.getElementById('custom-fonts-section');
+  if (!section) return;
+
+  if (Platform.isNative)
+  {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = '';
+  document.getElementById('custom-font-error').style.display = 'none';
+
+  var list = document.getElementById('custom-fonts-list');
+  var fonts = customFontsCache || [];
+
+  list.innerHTML = fonts.length
+    ? fonts.map(function(f)
+      {
+        return '<div class="custom-font-row">' +
+          '<span class="custom-font-name" style="font-family:' + escAttr(cssFontFamilyValue(f.familyName)) + '">' + escHtml(f.familyName) + '</span>' +
+          '<span class="custom-font-size">' + Math.max(1, Math.round(f.byteSize / 1024)) + ' KB</span>' +
+          '<button class="gls-card-del" style="position:static" onclick="removeCustomFont(\'' + escAttr(f.id) + '\')" title="Delete">×</button>' +
+        '</div>';
+      }).join('')
+    : '<div class="settings-help-text" style="margin:0">No custom fonts yet.</div>';
+}
+
+async function onCustomFontFileChosen()
+{
+  var fileInput = document.getElementById('custom-font-file'),
+      nameInput = document.getElementById('custom-font-name'),
+      errEl = document.getElementById('custom-font-error'),
+      file = fileInput.files && fileInput.files[0];
+
+  if (!file) return;
+
+  var familyName = nameInput.value.trim() || file.name.replace(/\.[^.]+$/, '');
+  errEl.style.display = 'none';
+
+  try
+  {
+    var bytes = await file.arrayBuffer();
+    await Platform.uploadCustomFont(familyName, file.name, bytes);
+    nameInput.value = '';
+    fileInput.value = '';
+    await refreshCustomFonts();
+    renderCustomFontsSection();
+    await injectCustomFontsStyle();
+    cachedFontList = null; // let the "Font…" picker pick up the new family
+  }
+  catch(e)
+  {
+    errEl.textContent = e.message || 'Upload failed';
+    errEl.style.display = '';
+  }
+}
+
+async function removeCustomFont(id)
+{
+  try { await Platform.deleteCustomFont(id); } catch(e) {}
+  await refreshCustomFonts();
+  renderCustomFontsSection();
+  await injectCustomFontsStyle();
+  cachedFontList = null;
 }
 
 document.getElementById('settings-modal').addEventListener

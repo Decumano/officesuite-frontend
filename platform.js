@@ -271,6 +271,41 @@ var Platform = (function () {
     return api('/comments/' + encodeURIComponent(commentId), { method: 'DELETE' }).then(function () { return undefined; });
   }
 
+  // ── Custom fonts (account-level; see src/fonts.rs) ──
+  // Web: served as real HTTP assets, so @font-face just works in any browser.
+  // Tauri: fetched through the cloud connection (if any) as base64 data: URIs
+  // via Rust commands, since the desktop app has no session/account of its
+  // own to authenticate a direct fetch with.
+
+  function listCustomFonts() {
+    if (tauri) return tauri.invoke('cloud_list_fonts').catch(function () { return []; });
+    return apiJson('/fonts').catch(function () { return []; });
+  }
+
+  function uploadCustomFont(familyName, filename, bytes) {
+    if (tauri) return webOnly();
+    var qs = '?familyName=' + encodeURIComponent(familyName) + '&filename=' + encodeURIComponent(filename);
+    return apiJson('/fonts' + qs, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: bytes
+    });
+  }
+
+  function deleteCustomFont(id) {
+    if (tauri) return webOnly();
+    return api('/fonts/' + encodeURIComponent(id), { method: 'DELETE' }).then(function () { return undefined; });
+  }
+
+  // Returns a data: URI (base64) for the font, playing the same role on
+  // Tauri that a direct /api/fonts/:id fetch plays on the web — a same-origin
+  // <link>/@font-face url() isn't available to an unauthenticated webview,
+  // but an inlined data: URI needs no request at all.
+  function customFontDataUrl(id) {
+    if (tauri) return tauri.invoke('cloud_font_data_url', { fontId: id });
+    return Promise.resolve('/api/fonts/' + encodeURIComponent(id));
+  }
+
   var DEFAULT_FILE_CONTENT = [
     "# Welcome to Lore Keep\n\n",
     "Lore Keep is a lightweight office suite that stores everything in **Markdown**.\n\n",
@@ -387,6 +422,10 @@ var Platform = (function () {
     linkMeta: linkMeta,
     listLinkFolder: listLinkFolder,
     readLinkFile: readLinkFile,
-    writeLinkFile: writeLinkFile
+    writeLinkFile: writeLinkFile,
+    listCustomFonts: listCustomFonts,
+    uploadCustomFont: uploadCustomFont,
+    deleteCustomFont: deleteCustomFont,
+    customFontDataUrl: customFontDataUrl
   };
 })();
