@@ -3474,3 +3474,10 @@ mark.gs-hl
 .custom-font-size { font-size: 11px; color: var(--text3); flex-shrink: 0; }
 .custom-fonts-upload-row { display: flex; gap: 8px; }
 .custom-fonts-upload-row input[type="text"] { flex: 1; margin: 0; }
+
+/* Cell color picker in the sheet toolbar: the swatch input hides inside the
+   button so clicking the icon opens the native color dialog. */
+.cell-color-btn { position: relative; overflow: hidden; cursor: pointer; }
+.cell-color-btn input[type="color"] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer; border: none; padding: 0;
+}

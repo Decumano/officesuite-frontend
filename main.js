@@ -6,11 +6,19 @@ let newFileType = 'doc';
 let editorView = 'write';
 let saveTimer = null;
 let sheetData = {};
+// Cell decorations, aliased per page just like sheetData below:
+// sheetColors = {ref: '#rrggbb'} paints a cell's background, serialized as a
+// `;#hex` suffix on the cell's line (B1=5;#FAFAFA); sheetMerges =
+// {anchorRef: [coveredRefs]} joins cells into one bigger cell, serialized as
+// a `:B2,B3,B4` suffix (B1=5:B2,B3,B4). Both suffixes may appear on one line
+// in either order.
+let sheetColors = {};
+let sheetMerges = {};
 // Multi-tab spreadsheets: each page owns a {ref: value} map; sheetData is
 // always an alias to the active page's map, so the whole grid/formula engine
 // keeps working unchanged. Serialized with a `# page name` heading per page;
 // formulas reference other tabs with the link-like syntax [Tab name](A1).
-let sheetPages = [{ name: 'Sheet 1', data: sheetData }];
+let sheetPages = [{ name: 'Sheet 1', data: sheetData, colors: sheetColors, merges: sheetMerges }];
 let sheetPageIdx = 0;
 // Set when the user switches tabs mid-formula: the next cell clicked on the
 // other tab is inserted into that pending formula as [Tab name](REF) and the
@@ -28,6 +36,9 @@ let selectionEnd = null;
 
 let editingCell = null;
 let isRefDragging = false;
+// True while the ref-drag above targets the formula bar instead of an
+// in-cell input (typing "=" in the bar, then clicking/dragging cells).
+let refDragViaBar = false;
 let formulaInsertStart = null;
 let formulaInsertLength = 0;
 
@@ -4423,6 +4434,13 @@ function buildChartDataFromCells(chartDef, cells)
   if (chartDef.type === 'scatter') return buildScatterChartData(chartDef, grid);
   var data = buildCategoricalChartData(chartDef, grid);
   if (chartDef.type === 'pie' || chartDef.type === 'doughnut') data.datasets = data.datasets.slice(0, 1);
+  if (chartDef.type === 'percent')
+    data.datasets = data.datasets.map(function(ds)
+    {
+      var total = chartDef.percentTotal ||
+                  ds.data.reduce(function(a, b){ return a + (parseFloat(b) || 0); }, 0);
+      return { label: ds.label, data: ds.data.map(function(v){ return total ? Math.round(((parseFloat(v) || 0) / total) * 1000) / 10 : 0; }) };
+    });
   return data;
 }
 
@@ -4430,7 +4448,7 @@ function buildChartJsConfigFromCells(chartDef, cells)
 {
   var data = buildChartDataFromCells(chartDef, cells),
       isPie = (chartDef.type === 'pie' || chartDef.type === 'doughnut'),
-      baseType = (chartDef.type === 'combo') ? 'bar' : chartDef.type;
+      baseType = (chartDef.type === 'combo' || chartDef.type === 'percent') ? 'bar' : chartDef.type;
 
   var datasets = data.datasets.map(function(ds, i)
   {
@@ -7421,7 +7439,9 @@ document.addEventListener
       formulaInsertStart = null;
       formulaInsertLength = 0;
 
-      var inp = document.getElementById('inp-' + editingCell);
+      var inp = refDragViaBar ? document.getElementById('formula-bar')
+                              : document.getElementById('inp-' + editingCell);
+      refDragViaBar = false;
 
       if (inp)
         inp.focus();
@@ -7863,10 +7883,22 @@ function cellMouseDown(mouseEvent, name)
         backRef = ctx.ref;
 
     switchSheetPage(ctx.pageIdx);
-    enterEditMode(backRef);
 
-    var backInp = document.getElementById('inp-' + backRef);
-    if (backInp) backInp.setSelectionRange(caretPos, caretPos);
+    if (ctx.viaBar)
+    {
+      // Resume in the formula bar: selectCell repopulates it from
+      // sheetData (which now holds the formula with the inserted ref).
+      selectCell(backRef);
+      var backBar = document.getElementById('formula-bar');
+      backBar.focus();
+      backBar.setSelectionRange(caretPos, caretPos);
+    }
+    else
+    {
+      enterEditMode(backRef);
+      var backInp = document.getElementById('inp-' + backRef);
+      if (backInp) backInp.setSelectionRange(caretPos, caretPos);
+    }
     return;
   }
 
@@ -7879,9 +7911,30 @@ function cellMouseDown(mouseEvent, name)
     var editingInput = document.getElementById('inp-' + editingCell);
 
     isRefDragging = true;
+    refDragViaBar = false;
     selectionAnchor = name;
     selectionEnd = name;
     formulaInsertStart = editingInput ? editingInput.selectionStart : 0;
+    formulaInsertLength = 0;
+
+    insertFormulaRef(name, name);
+    return;
+  }
+
+  // The same picker for formula-BAR editing: with the bar focused and
+  // holding a formula, clicking cells inserts references instead of moving
+  // the selection away (which used to clobber the half-typed formula).
+  // Focus is still on the bar at mousedown time; preventDefault keeps it.
+  var formulaBar = document.getElementById('formula-bar');
+  if (document.activeElement === formulaBar && formulaBar.value.startsWith('='))
+  {
+    mouseEvent.preventDefault();
+
+    isRefDragging = true;
+    refDragViaBar = true;
+    selectionAnchor = name;
+    selectionEnd = name;
+    formulaInsertStart = formulaBar.selectionStart;
     formulaInsertLength = 0;
 
     insertFormulaRef(name, name);
@@ -7916,9 +7969,13 @@ function cellMouseEnter(name)
 
 function insertFormulaRef(anchorRef, endRef)
 {
-  var inp = document.getElementById('inp-' + editingCell);
+  // The picker serves two editing surfaces: the in-cell input, or the
+  // formula bar (refDragViaBar) — same insertion logic either way.
+  var targetRef = refDragViaBar ? document.getElementById('cell-ref').value : editingCell,
+      inp = refDragViaBar ? document.getElementById('formula-bar')
+                          : document.getElementById('inp-' + editingCell);
 
-  if (!inp)
+  if (!inp || !targetRef)
     return;
 
   var refText = (anchorRef === endRef) ? anchorRef : (anchorRef + ':' + endRef),
@@ -7931,8 +7988,16 @@ function insertFormulaRef(anchorRef, endRef)
   var caretPos = formulaInsertStart + formulaInsertLength;
   inp.setSelectionRange(caretPos, caretPos);
 
-  sheetData[editingCell] = inp.value;
-  evaluateFormulas(editingCell);
+  sheetData[targetRef] = inp.value;
+
+  // Bar editing: mirror the raw formula into the cell's own input too.
+  if (refDragViaBar)
+  {
+    var cellInp = document.getElementById('inp-' + targetRef);
+    if (cellInp) cellInp.value = inp.value;
+  }
+
+  evaluateFormulas(targetRef);
   saveSheetToFile();
 
   renderRangeSelection();
@@ -8791,6 +8856,27 @@ function resolveValue(exprText)
   return Function('"use strict"; return (' + substituteCellRefs(exprText) + ')')();
 }
 
+// Resolves innermost parenthesis groups that are NOT function calls (the
+// preceding character isn't part of a name like ROUND or LOG10) into their
+// computed value. Ranges (A1:B3) are skipped — those belong to whichever
+// aggregation function wraps them. Groups that fail to evaluate are left
+// untouched, so an unresolvable formula still degrades to #ERR normally.
+function resolveBareGroups(expr)
+{
+  return expr.replace
+  (
+    /(?<![A-Za-z0-9_])\(([^()]+)\)/g,
+    function(match, inner)
+    {
+      if (inner.indexOf(':') !== -1)
+        return match;
+
+      try { return formatForExpr(resolveValue(inner)); }
+      catch(e) { return match; }
+    }
+  );
+}
+
 function cellNumericValue(ref)
 {
   var v = sheetData[ref];
@@ -8836,9 +8922,52 @@ function getRangeVals(range)
   return getRangeRefs(range).map(cellNumericValue);
 }
 
+// Cell refs covered by one aggregation argument: a range (A1:B3) or a single
+// ref (A1). Returns null for anything else (a literal or an expression), so
+// callers can fall back to value-based handling.
+function argCellRefs(arg)
+{
+  if (arg.indexOf(':') !== -1)
+  {
+    var refs = getRangeRefs(arg);
+    return refs.length ? refs : null;
+  }
+
+  var single = parseName(arg.trim());
+  return single ? [single.col + single.row] : null;
+}
+
+// Collects the numeric values behind a mixed aggregation argument list:
+// each argument may be a range, a single ref, a literal, or any expression
+// the resolver can evaluate — so MAX(A1,B2), MAX(3,7), SUM(A1:A4, 10) and
+// AVG(A1, (B1+1)*2) all behave like they do in a real spreadsheet.
+function aggregateArgValues(argText)
+{
+  var vals = [];
+
+  splitTopLevelArgs(argText).forEach(function(arg)
+  {
+    if (!arg)
+      return;
+
+    var refs = argCellRefs(arg);
+    if (refs)
+    {
+      refs.forEach(function(ref) { vals.push(cellNumericValue(ref)); });
+      return;
+    }
+
+    var v = resolveValue(arg),
+        n = (typeof v === 'number') ? v : parseFloat(v);
+    vals.push(isNaN(n) ? 0 : n);
+  });
+
+  return vals;
+}
+
 function sumRange(r)
 {
-  return getRangeVals(r).reduce
+  return aggregateArgValues(r).reduce
   (
     function(a, b)
     {
@@ -8850,38 +8979,65 @@ function sumRange(r)
 
 function avgRange(r)
 {
-  var vals = getRangeVals(r);
-  return vals.length ? sumRange(r) / vals.length : 0;
+  var vals = aggregateArgValues(r);
+  return vals.length ? vals.reduce(function(a, b){ return a + b; }, 0) / vals.length : 0;
 }
 
 function countRange(r)
 {
-  return getRangeRefs(r).length;
+  var total = 0;
+  splitTopLevelArgs(r).forEach(function(arg)
+  {
+    if (!arg) return;
+    var refs = argCellRefs(arg);
+    total += refs ? refs.length : 1;
+  });
+  return total;
 }
 
 function countaRange(r)
 {
-  return getRangeRefs(r).filter(function(ref) { return (sheetData[ref] || '') !== ''; }).length;
+  var total = 0;
+  splitTopLevelArgs(r).forEach(function(arg)
+  {
+    if (!arg) return;
+    var refs = argCellRefs(arg);
+    if (refs)
+      total += refs.filter(function(ref) { return (sheetData[ref] || '') !== ''; }).length;
+    else
+      total += 1; // a literal/expression argument is inherently non-blank
+  });
+  return total;
 }
 
 function countBlankRange(r)
 {
-  return getRangeRefs(r).filter(function(ref) { return (sheetData[ref] || '') === ''; }).length;
+  var total = 0;
+  splitTopLevelArgs(r).forEach(function(arg)
+  {
+    if (!arg) return;
+    var refs = argCellRefs(arg);
+    if (refs)
+      total += refs.filter(function(ref) { return (sheetData[ref] || '') === ''; }).length;
+  });
+  return total;
 }
 
 function maxRange(r)
 {
-  return Math.max.apply(null, getRangeVals(r));
+  var vals = aggregateArgValues(r);
+  return vals.length ? Math.max.apply(null, vals) : 0;
 }
 
 function minRange(r)
 {
-  return Math.min.apply(null, getRangeVals(r));
+  var vals = aggregateArgValues(r);
+  return vals.length ? Math.min.apply(null, vals) : 0;
 }
 
 function medianRange(r)
 {
-  var vals = getRangeVals(r).slice().sort(function(a, b) { return a - b; }),
+  var vals = aggregateArgValues(r).slice().sort(function(a, b) { return a - b; }),
       len = vals.length;
 
   if (!len)
@@ -8894,7 +9050,7 @@ function medianRange(r)
 
 function productRange(r)
 {
-  return getRangeVals(r).reduce
+  return aggregateArgValues(r).reduce
   (
     function(a, b)
     {
@@ -8906,7 +9062,7 @@ function productRange(r)
 
 function varianceRange(r)
 {
-  var vals = getRangeVals(r),
+  var vals = aggregateArgValues(r),
       n = vals.length;
 
   if (n < 2)
@@ -9212,6 +9368,13 @@ function evalCell(ref, val)
     {
       previous = expr;
       expr = applyFunctionPass(expr);
+
+      // When no function matched (their arg regexes require paren-free
+      // arguments), collapse innermost BARE (…) groups to values so e.g.
+      // MAX((A1+1)*2, 5) flattens to MAX(4,5) for the next pass — plain
+      // parenthesised sub-expressions resolve before anything around them.
+      if (expr === previous)
+        expr = resolveBareGroups(expr);
     }
     while (expr !== previous && --iterations > 0);
 
@@ -9265,6 +9428,43 @@ function evaluateFormulas(skipRef)
   refreshSheetCharts();
 }
 
+// Strips the cell-decoration suffixes off a serialized cell line's payload
+// (everything after "REF="): a trailing `;#hex` paints the background and a
+// trailing `:B2,B3` lists cells merged into this one. They may be chained in
+// either order (B1=5:B2,B3;#FAFAFA == B1=5;#FAFAFA:B2,B3) — both parse the
+// same because stripping repeats from the end until nothing matches.
+function stripCellSuffixes(rest)
+{
+  var color = null,
+      merged = null,
+      changed = true;
+
+  while (changed)
+  {
+    changed = false;
+
+    var mc = rest.match(/;(#[0-9A-Fa-f]{3}(?:[0-9A-Fa-f]{3})?(?:[0-9A-Fa-f]{2})?)\s*$/);
+    if (mc && color === null)
+    {
+      color = mc[1];
+      rest = rest.slice(0, rest.length - mc[0].length);
+      changed = true;
+      continue;
+    }
+
+    var mm = rest.match(/:(\$?[A-Z]{1,2}\$?\d+(?:\s*,\s*\$?[A-Z]{1,2}\$?\d+)*)\s*$/);
+    if (mm && merged === null)
+    {
+      merged = mm[1].split(',').map(function(t){ return t.trim().replace(/\$/g, ''); });
+      rest = rest.slice(0, rest.length - mm[0].length);
+      changed = true;
+      continue;
+    }
+  }
+
+  return { rest: rest, color: color, merged: merged };
+}
+
 // ── SHEET TABS (pages) ──
 
 function renderSheetPageTabs()
@@ -9289,6 +9489,16 @@ function renderSheetPageTabs()
   '</span>';
 }
 
+function aliasActiveSheetPage()
+{
+  var page = sheetPages[sheetPageIdx];
+  if (!page.colors) page.colors = {};
+  if (!page.merges) page.merges = {};
+  sheetData = page.data;
+  sheetColors = page.colors;
+  sheetMerges = page.merges;
+}
+
 function switchSheetPage(i)
 {
   if (i === sheetPageIdx || !sheetPages[i]) return;
@@ -9310,9 +9520,21 @@ function switchSheetPage(i)
     }
     editingCell = null;
   }
+  else
+  {
+    // Formula-BAR editing gets the same treatment: leave mid-formula, click
+    // a cell on the destination tab, and come back to the bar.
+    var pickBar = document.getElementById('formula-bar');
+    if (document.activeElement === pickBar && pickBar.value.startsWith('='))
+    {
+      var barRef = document.getElementById('cell-ref').value;
+      sheetData[barRef] = pickBar.value;
+      pickCtx = { pageIdx: sheetPageIdx, ref: barRef, insertStart: pickBar.selectionStart, insertLen: 0, viaBar: true };
+    }
+  }
 
   sheetPageIdx = i;
-  sheetData = sheetPages[i].data;
+  aliasActiveSheetPage();
   formulaPickCtx = pickCtx;
   // Undo snapshots belong to the page they were taken on; restoring one onto
   // a different page would corrupt it, so the stacks reset per page.
@@ -9339,7 +9561,7 @@ function uniqueSheetPageName(base, excludeIdx)
 
 function addSheetPage()
 {
-  var page = { name: uniqueSheetPageName('Sheet ' + (sheetPages.length + 1), -1), data: {} };
+  var page = { name: uniqueSheetPageName('Sheet ' + (sheetPages.length + 1), -1), data: {}, colors: {}, merges: {} };
   sheetPages.push(page);
   switchSheetPage(sheetPages.length - 1);
   saveSheetToFile();
@@ -9359,7 +9581,10 @@ function renameSheetPage(i)
     {
       var name = document.getElementById('sheet-tab-name').value.trim();
       if (!name) return;
+      var oldName = page.name;
       page.name = uniqueSheetPageName(name, i);
+      // Charts follow their tab through renames.
+      sheetCharts.forEach(function(c){ if (c.page === oldName) c.page = page.name; });
       closeDataModal();
       renderSheetPageTabs();
       refreshAllCellDisplays(); // refs to the old name now show #REF
@@ -9378,7 +9603,8 @@ function deleteSheetPage(e, i)
   if (sheetPageIdx >= sheetPages.length) sheetPageIdx = sheetPages.length - 1;
   else if (i < sheetPageIdx) sheetPageIdx--;
 
-  sheetData = sheetPages[sheetPageIdx].data;
+  aliasActiveSheetPage();
+  sheetCharts = sheetCharts.filter(function(c){ return !c.page || sheetPages.some(function(p){ return p.name === c.page; }); });
   sheetUndoStack = [];
   sheetRedoStack = [];
 
@@ -9447,7 +9673,7 @@ function loadSheetFile(f)
       // have no heading and fall into an implicit first page below.
       if (line.charAt(0) === '#')
       {
-        curPage = { name: line.replace(/^#+\s*/, '').trim() || ('Sheet ' + (sheetPages.length + 1)), data: {} };
+        curPage = { name: line.replace(/^#+\s*/, '').trim() || ('Sheet ' + (sheetPages.length + 1)), data: {}, colors: {}, merges: {} };
         sheetPages.push(curPage);
         return;
       }
@@ -9459,25 +9685,34 @@ function loadSheetFile(f)
 
       if (!curPage)
       {
-        curPage = { name: 'Sheet 1', data: {} };
+        curPage = { name: 'Sheet 1', data: {}, colors: {}, merges: {} };
         sheetPages.push(curPage);
       }
 
       var ref = line.slice(0, refEnd),
-          rest = line.slice(refEnd + 1),
+          stripped = stripCellSuffixes(line.slice(refEnd + 1)),
+          rest = stripped.rest,
           formulaEnd = rest.indexOf('=');
+
+      if (stripped.color)  curPage.colors[ref] = stripped.color;
+      if (stripped.merged) curPage.merges[ref] = stripped.merged;
 
       // Formula cells are written as ref=formula=result; the result is informational
       // (recomputed on load), so only the formula half is kept, with '=' restored.
-      curPage.data[ref] = (formulaEnd === -1) ? rest : ('=' + rest.slice(0, formulaEnd));
+      if (rest !== '')
+        curPage.data[ref] = (formulaEnd === -1) ? rest : ('=' + rest.slice(0, formulaEnd));
     }
   );
 
   if (!sheetPages.length)
-    sheetPages = [{ name: 'Sheet 1', data: {} }];
+    sheetPages = [{ name: 'Sheet 1', data: {}, colors: {}, merges: {} }];
 
   sheetPageIdx = 0;
-  sheetData = sheetPages[0].data;
+  aliasActiveSheetPage();
+
+  // Charts made before per-tab charts existed carry no page name; pin them
+  // to the first tab so they don't float over every page.
+  sheetCharts.forEach(function(c){ if (!c.page) c.page = sheetPages[0].name; });
 
   renderSheetPageTabs();
   ensureGridFitsData(sheetData);
@@ -9506,11 +9741,153 @@ function refreshAllCellDisplays()
         inp.classList.toggle('formula-result', v.startsWith('='));
       }
     }
+
+  applyCellDecorations();
+}
+
+// ── CELL DECORATIONS (background colors + merged cells) ──
+
+// Refs whose <td> was touched by the previous decoration pass, so a page
+// switch / undo / unmerge can cheaply reset exactly those cells.
+var decoratedCellRefs = [];
+
+function applyCellDecorations()
+{
+  decoratedCellRefs.forEach(function(ref)
+  {
+    var td = document.getElementById('cell-' + ref);
+    if (!td) return;
+    td.style.background = '';
+    td.style.display = '';
+    td.removeAttribute('colspan');
+    td.removeAttribute('rowspan');
+  });
+  decoratedCellRefs = [];
+
+  Object.keys(sheetColors).forEach(function(ref)
+  {
+    var td = document.getElementById('cell-' + ref);
+    if (!td || !sheetColors[ref]) return;
+    td.style.background = sheetColors[ref];
+    decoratedCellRefs.push(ref);
+  });
+
+  Object.keys(sheetMerges).forEach(function(anchor)
+  {
+    var covered = sheetMerges[anchor];
+    if (!covered || !covered.length) return;
+
+    // The merge is rendered as the bounding rectangle of anchor + covered
+    // cells (colspan/rowspan on the anchor, everything else hidden), so even
+    // a hand-written non-rectangular list ends up displayable.
+    var pa = parseName(anchor);
+    if (!pa) return;
+    var minRow = pa.row, maxRow = pa.row,
+        minCol = colIndex(pa.col), maxCol = colIndex(pa.col);
+
+    covered.forEach(function(ref)
+    {
+      var pc = parseName(ref);
+      if (!pc) return;
+      minRow = Math.min(minRow, pc.row); maxRow = Math.max(maxRow, pc.row);
+      minCol = Math.min(minCol, colIndex(pc.col)); maxCol = Math.max(maxCol, colIndex(pc.col));
+    });
+
+    ensureGridFits(maxRow, maxCol);
+
+    var anchorTd = document.getElementById('cell-' + anchor);
+    if (!anchorTd) return;
+
+    anchorTd.colSpan = maxCol - minCol + 1;
+    anchorTd.rowSpan = maxRow - minRow + 1;
+    decoratedCellRefs.push(anchor);
+
+    for (var r = minRow; r <= maxRow; r++)
+      for (var c = minCol; c <= maxCol; c++)
+      {
+        var ref = colName(c) + r;
+        if (ref === anchor) continue;
+        var td = document.getElementById('cell-' + ref);
+        if (td)
+        {
+          td.style.display = 'none';
+          decoratedCellRefs.push(ref);
+        }
+      }
+  });
+}
+
+// Applies (or clears, with null) a background color to every cell in the
+// current selection rectangle.
+function applyCellColor(color)
+{
+  if (!selectionAnchor) return;
+  sheetSnapshotForUndo();
+
+  var box = getSelectionBoundingBox();
+  for (var r = box.rowStart; r <= box.rowEnd; r++)
+    for (var c = box.colStart; c <= box.colEnd; c++)
+    {
+      var ref = colName(c) + r;
+      if (color) sheetColors[ref] = color;
+      else delete sheetColors[ref];
+    }
+
+  applyCellDecorations();
+  saveSheetToFile();
+}
+
+function clearCellColor() { applyCellColor(null); }
+
+// Merges the selected rectangle into one big cell (top-left becomes the
+// anchor), or splits it back apart when the selection sits on an existing
+// merge.
+function toggleMergeSelection()
+{
+  if (!selectionAnchor) return;
+
+  var box = getSelectionBoundingBox();
+
+  // Unmerge: any existing anchor inside the selection wins.
+  var existing = Object.keys(sheetMerges).find(function(anchor)
+  {
+    var pa = parseName(anchor);
+    return pa && pa.row >= box.rowStart && pa.row <= box.rowEnd &&
+           colIndex(pa.col) >= box.colStart && colIndex(pa.col) <= box.colEnd;
+  });
+
+  sheetSnapshotForUndo();
+
+  if (existing)
+  {
+    delete sheetMerges[existing];
+  }
+  else
+  {
+    if (box.rowStart === box.rowEnd && box.colStart === box.colEnd)
+      return; // a single cell has nothing to merge with
+
+    var anchor = colName(box.colStart) + box.rowStart,
+        covered = [];
+
+    for (var r = box.rowStart; r <= box.rowEnd; r++)
+      for (var c = box.colStart; c <= box.colEnd; c++)
+      {
+        var ref = colName(c) + r;
+        if (ref !== anchor) covered.push(ref);
+      }
+
+    sheetMerges[anchor] = covered;
+  }
+
+  applyCellDecorations();
+  saveSheetToFile();
+  selectCell(existing || (colName(box.colStart) + box.rowStart));
 }
 
 function sheetSnapshotForUndo()
 {
-  sheetUndoStack.push({ data: JSON.parse(JSON.stringify(sheetData)), charts: JSON.parse(JSON.stringify(sheetCharts)) });
+  sheetUndoStack.push({ data: JSON.parse(JSON.stringify(sheetData)), charts: JSON.parse(JSON.stringify(sheetCharts)), colors: JSON.parse(JSON.stringify(sheetColors)), merges: JSON.parse(JSON.stringify(sheetMerges)) });
   sheetRedoStack = [];
 
   if (sheetUndoStack.length > 100)
@@ -9522,12 +9899,17 @@ function sheetRestoreSnapshot(fromStack, toStack)
   if (!fromStack.length)
     return;
 
-  toStack.push({ data: JSON.parse(JSON.stringify(sheetData)), charts: JSON.parse(JSON.stringify(sheetCharts)) });
+  toStack.push({ data: JSON.parse(JSON.stringify(sheetData)), charts: JSON.parse(JSON.stringify(sheetCharts)), colors: JSON.parse(JSON.stringify(sheetColors)), merges: JSON.parse(JSON.stringify(sheetMerges)) });
 
   var snap = fromStack.pop();
 
   sheetData = snap.data;
-  sheetPages[sheetPageIdx].data = sheetData; // keep the page alias in sync
+  sheetColors = snap.colors || {};
+  sheetMerges = snap.merges || {};
+  var snapPage = sheetPages[sheetPageIdx]; // keep the page aliases in sync
+  snapPage.data = sheetData;
+  snapPage.colors = sheetColors;
+  snapPage.merges = sheetMerges;
   sheetCharts = snap.charts;
   ensureGridFitsData(sheetData);
 
@@ -9577,19 +9959,28 @@ function saveSheetToFile()
 
     // Iterate the page's own cells (row-major) rather than the grid bounds:
     // the grid is sized for the ACTIVE page, and clipping another page's
-    // far-out cells to it would silently drop them from the file.
-    Object.keys(page.data)
+    // far-out cells to it would silently drop them from the file. Cells with
+    // only a color/merge (no value) still get a line, so the decoration keeps.
+    var colors = page.colors || {},
+        merges = page.merges || {},
+        cellKeys = {};
+    Object.keys(page.data).forEach(function(ref){ if (page.data[ref]) cellKeys[ref] = true; });
+    Object.keys(colors).forEach(function(ref){ if (colors[ref]) cellKeys[ref] = true; });
+    Object.keys(merges).forEach(function(ref){ if (merges[ref] && merges[ref].length) cellKeys[ref] = true; });
+
+    Object.keys(cellKeys)
       .map(function(ref){ return { ref: ref, at: parseName(ref) }; })
-      .filter(function(c){ return c.at && page.data[c.ref]; })
+      .filter(function(c){ return !!c.at; })
       .sort(function(a, b){ return a.at.row - b.at.row || colIndex(a.at.col) - colIndex(b.at.col); })
       .forEach(function(c)
       {
-        var val = page.data[c.ref];
-        out += val.startsWith('=')
-                ?
-                  c.ref + '=' + val.slice(1) + '=' + evalCellOnPage(page, c.ref, val) + '\n'
-                :
-                  c.ref + '=' + val + '\n';
+        var val = page.data[c.ref] || '';
+        var cellLine = val.startsWith('=')
+                       ? c.ref + '=' + val.slice(1) + '=' + evalCellOnPage(page, c.ref, val)
+                       : c.ref + '=' + val;
+        if (merges[c.ref] && merges[c.ref].length) cellLine += ':' + merges[c.ref].join(',');
+        if (colors[c.ref]) cellLine += ';' + colors[c.ref];
+        out += cellLine + '\n';
       });
   });
 
@@ -9788,6 +10179,23 @@ function buildChartData(chartDef)
   if (chartDef.type === 'pie' || chartDef.type === 'doughnut')
     data.datasets = data.datasets.slice(0, 1);
 
+  // % Columns: the range holds absolute values; each becomes a percentage of
+  // the designated total (chartDef.percentTotal), or of its own series' sum
+  // when no total was given — so the columns then read as percentages.
+  if (chartDef.type === 'percent')
+    data.datasets = data.datasets.map(function(ds)
+    {
+      var total = chartDef.percentTotal ||
+                  ds.data.reduce(function(a, b){ return a + (parseFloat(b) || 0); }, 0);
+      return {
+        label: ds.label,
+        data: ds.data.map(function(v)
+        {
+          return total ? Math.round(((parseFloat(v) || 0) / total) * 1000) / 10 : 0;
+        })
+      };
+    });
+
   return data;
 }
 
@@ -9809,6 +10217,15 @@ function buildChartScales(chartDef)
             };
   }
 
+  if (chartDef.type === 'percent')
+  {
+    return  {
+              x: { grid: { color: gridColor }, ticks: { color: tickColor } },
+              y: { beginAtZero: true, grid: { color: gridColor },
+                   ticks: { color: tickColor, callback: function(v){ return v + '%'; } } }
+            };
+  }
+
   return  {
             x: { grid: { color: gridColor }, ticks: { color: tickColor } },
             y: { grid: { color: gridColor }, ticks: { color: tickColor } }
@@ -9819,7 +10236,7 @@ function buildChartJsConfig(chartDef)
 {
   var data = buildChartData(chartDef),
       isPie = (chartDef.type === 'pie' || chartDef.type === 'doughnut'),
-      baseType = (chartDef.type === 'combo') ? 'bar' : chartDef.type;
+      baseType = (chartDef.type === 'combo' || chartDef.type === 'percent') ? 'bar' : chartDef.type;
 
   var datasets = data.datasets.map(function(ds, i)
   {
@@ -9856,7 +10273,10 @@ function buildChartJsConfig(chartDef)
               plugins:
               {
                 title: { display: !!chartDef.title, text: chartDef.title, color: '#f0ede6' },
-                legend: { display: datasets.length > 1 || isPie, labels: { color: '#9e9b94' } }
+                legend: { display: datasets.length > 1 || isPie, labels: { color: '#9e9b94' } },
+                tooltip: (chartDef.type === 'percent')
+                  ? { callbacks: { label: function(ctx){ return (ctx.dataset.label ? ctx.dataset.label + ': ' : '') + ctx.parsed.y + '%'; } } }
+                  : {}
               },
               scales: isPie ? {} : buildChartScales(chartDef)
             }
@@ -9874,8 +10294,13 @@ function renderSheetCharts()
   sheetChartInstances = {};
   layer.innerHTML = '';
 
+  // Only the active tab's charts render; switching tabs re-runs this.
+  var activePage = sheetPages[sheetPageIdx].name;
+
   sheetCharts.forEach(function(chartDef)
   {
+    if (chartDef.page && chartDef.page !== activePage)
+      return;
     var box = document.createElement('div');
     box.className = 'sheet-chart-box';
     box.dataset.chartId = chartDef.id;
@@ -9944,6 +10369,8 @@ function openChartModal()
 
   document.getElementById('chart-range-input').value = prefill;
   document.getElementById('chart-title-input').value = '';
+  document.getElementById('chart-percent-total').value = '';
+  document.getElementById('chart-percent-total').style.display = 'none';
   document.getElementById('chart-first-row-labels').checked = true;
   document.getElementById('chart-first-col-series').checked = true;
 
@@ -9961,6 +10388,10 @@ function selectChartType(type, el)
 
   document.querySelectorAll('#chart-modal .type-card').forEach(function(c){ c.classList.remove('selected'); });
   el.classList.add('selected');
+
+  // % Columns converts absolute values into percentages of a total; the
+  // total is optional (defaults to each series' own sum).
+  document.getElementById('chart-percent-total').style.display = (type === 'percent') ? '' : 'none';
 }
 
 document.getElementById('chart-modal').addEventListener
@@ -9987,6 +10418,8 @@ function createChart()
 
   var offset = (sheetCharts.length % 4) * 30;
 
+  var percentTotal = parseFloat(document.getElementById('chart-percent-total').value);
+
   sheetCharts.push
   (
     {
@@ -9994,6 +10427,9 @@ function createChart()
       type: newChartType,
       title: document.getElementById('chart-title-input').value.trim(),
       range: range,
+      // Charts belong to the tab they were created on and only render there.
+      page: sheetPages[sheetPageIdx].name,
+      percentTotal: (newChartType === 'percent' && !isNaN(percentTotal) && percentTotal > 0) ? percentTotal : null,
       firstRowLabels: document.getElementById('chart-first-row-labels').checked,
       firstColSeries: document.getElementById('chart-first-col-series').checked,
       x: 40 + offset,
