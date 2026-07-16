@@ -8,17 +8,19 @@ let saveTimer = null;
 let sheetData = {};
 // Cell decorations, aliased per page just like sheetData below:
 // sheetColors = {ref: '#rrggbb'} paints a cell's background, serialized as a
-// `;#hex` suffix on the cell's line (B1=5;#FAFAFA); sheetMerges =
-// {anchorRef: [coveredRefs]} joins cells into one bigger cell, serialized as
-// a `:B2,B3,B4` suffix (B1=5:B2,B3,B4). Both suffixes may appear on one line
-// in either order.
+// `;#hex` suffix on the cell's line (B1=5;#FAFAFA); sheetTextColors paints a
+// cell's text, serialized as a `;txt#hex` suffix (B1=5;txt#FF0000);
+// sheetMerges = {anchorRef: [coveredRefs]} joins cells into one bigger cell,
+// serialized as a `:B2,B3,B4` suffix (B1=5:B2,B3,B4). The suffixes may appear
+// on one line in any order.
 let sheetColors = {};
+let sheetTextColors = {};
 let sheetMerges = {};
 // Multi-tab spreadsheets: each page owns a {ref: value} map; sheetData is
 // always an alias to the active page's map, so the whole grid/formula engine
 // keeps working unchanged. Serialized with a `# page name` heading per page;
 // formulas reference other tabs with the link-like syntax [Tab name](A1).
-let sheetPages = [{ name: 'Sheet 1', data: sheetData, colors: sheetColors, merges: sheetMerges }];
+let sheetPages = [{ name: 'Sheet 1', data: sheetData, colors: sheetColors, textColors: sheetTextColors, merges: sheetMerges }];
 let sheetPageIdx = 0;
 // Set when the user switches tabs mid-formula: the next cell clicked on the
 // other tab is inserted into that pending formula as [Tab name](REF) and the
@@ -7650,7 +7652,7 @@ function buildSheet()
                         '</th>';
 
   for (var i = 0; i < COLS; i++)
-    tableHeadNames +=   '<th class="col-header">' +
+    tableHeadNames +=   '<th class="col-header" id="colh-' + i + '" onmousedown="colHeaderMouseDown(event,' + i + ')">' +
                           colName(i) +
                         '</th>';
 
@@ -7663,7 +7665,7 @@ function buildSheet()
   for (var i = 1; i <= ROWS; i++)
   {
     html += '<tr>' +
-              '<th class="row-header" style="position: sticky; left: 0; z-index: 1;">' +
+              '<th class="row-header" id="rowh-' + i + '" onmousedown="rowHeaderMouseDown(event,' + i + ')" style="position: sticky; left: 0; z-index: 1;">' +
                 i +
               '</th>';
 
@@ -7676,6 +7678,7 @@ function buildSheet()
   document.getElementById('sheet-body').innerHTML = html;
 
   paintBucketSwatch();
+  paintTextSwatch();
 }
 
 function sheetCellHtml(ref)
@@ -7719,6 +7722,8 @@ function growSheetGrid(targetRows, targetCols)
     {
       var th = document.createElement('th');
       th.className = 'col-header';
+      th.id = 'colh-' + j;
+      th.setAttribute('onmousedown', 'colHeaderMouseDown(event,' + j + ')');
       th.textContent = colName(j);
       headRow.appendChild(th);
     }
@@ -7737,7 +7742,7 @@ function growSheetGrid(targetRows, targetCols)
     var html = '';
     for (var i = ROWS + 1; i <= targetRows; i++)
     {
-      html += '<tr><th class="row-header" style="position: sticky; left: 0; z-index: 1;">' + i + '</th>';
+      html += '<tr><th class="row-header" id="rowh-' + i + '" onmousedown="rowHeaderMouseDown(event,' + i + ')" style="position: sticky; left: 0; z-index: 1;">' + i + '</th>';
       for (var j2 = 0; j2 < COLS; j2++)
         html += sheetCellHtml(colName(j2) + i);
       html += '</tr>';
@@ -7844,6 +7849,40 @@ function selectCell(name)
   document.getElementById('formula-bar').value = sheetData[name] || '';
 
   refreshFillHandle();
+  updateHeaderHighlights();
+  refreshRefHighlights();
+}
+
+// Marks the row/column header cells spanning the current selection, so the
+// margins always show where you are.
+function updateHeaderHighlights()
+{
+  document.querySelectorAll('#sheet-grid th.hl').forEach
+  (
+    function(th)
+    {
+      th.classList.remove('hl');
+    }
+  );
+
+  if (!selectionAnchor)
+    return;
+
+  var box = getSelectionBoundingBox();
+  if (!box)
+    return;
+
+  for (var r = box.rowStart; r <= box.rowEnd; r++)
+  {
+    var rh = document.getElementById('rowh-' + r);
+    if (rh) rh.classList.add('hl');
+  }
+
+  for (var c = box.colStart; c <= box.colEnd; c++)
+  {
+    var ch = document.getElementById('colh-' + c);
+    if (ch) ch.classList.add('hl');
+  }
 }
 
 function cellMouseDown(mouseEvent, name)
@@ -7942,6 +7981,65 @@ function cellMouseDown(mouseEvent, name)
   selectCell(name);
 }
 
+// Clicking a column letter or row number in the margins: while a formula is
+// being typed it inserts the whole-column/row range (A:A / 4:4) at the caret,
+// mirroring cellMouseDown's cell picker; otherwise it selects the whole
+// column or row.
+function colHeaderMouseDown(mouseEvent, col)
+{
+  var letter = colName(col);
+  headerMouseDown(mouseEvent, letter + ':' + letter, letter + '1', letter + ROWS);
+}
+
+function rowHeaderMouseDown(mouseEvent, row)
+{
+  headerMouseDown(mouseEvent, row + ':' + row, 'A' + row, colName(COLS - 1) + row);
+}
+
+function headerMouseDown(mouseEvent, rangeText, selAnchor, selEnd)
+{
+  if (mouseEvent.button !== 0)
+    return;
+
+  // Mid-formula in a cell: insert the range at the caret, keep typing.
+  if (editingCell && (sheetData[editingCell] || '').startsWith('='))
+  {
+    mouseEvent.preventDefault();
+
+    var editingInput = document.getElementById('inp-' + editingCell);
+    refDragViaBar = false;
+    formulaInsertStart = editingInput ? editingInput.selectionStart : 0;
+    formulaInsertLength = 0;
+    insertFormulaText(rangeText);
+    formulaInsertStart = null;
+    formulaInsertLength = 0;
+    if (editingInput) editingInput.focus();
+    return;
+  }
+
+  // Mid-formula in the formula bar: same insertion there.
+  var formulaBar = document.getElementById('formula-bar');
+  if (document.activeElement === formulaBar && formulaBar.value.startsWith('='))
+  {
+    mouseEvent.preventDefault();
+
+    refDragViaBar = true;
+    formulaInsertStart = formulaBar.selectionStart;
+    formulaInsertLength = 0;
+    insertFormulaText(rangeText);
+    refDragViaBar = false;
+    formulaInsertStart = null;
+    formulaInsertLength = 0;
+    formulaBar.focus();
+    return;
+  }
+
+  // Otherwise: select the whole row/column.
+  selectCell(selAnchor);
+  selectionEnd = selEnd;
+  renderRangeSelection();
+}
+
 function cellMouseEnter(name)
 {
   if (isFillDragging)
@@ -7966,6 +8064,12 @@ function cellMouseEnter(name)
 
 function insertFormulaRef(anchorRef, endRef)
 {
+  var refText = (anchorRef === endRef) ? anchorRef : (anchorRef + ':' + endRef);
+  insertFormulaText(refText);
+}
+
+function insertFormulaText(refText)
+{
   // The picker serves two editing surfaces: the in-cell input, or the
   // formula bar (refDragViaBar) — same insertion logic either way.
   var targetRef = refDragViaBar ? document.getElementById('cell-ref').value : editingCell,
@@ -7975,8 +8079,7 @@ function insertFormulaRef(anchorRef, endRef)
   if (!inp || !targetRef)
     return;
 
-  var refText = (anchorRef === endRef) ? anchorRef : (anchorRef + ':' + endRef),
-      before = inp.value.slice(0, formulaInsertStart),
+  var before = inp.value.slice(0, formulaInsertStart),
       after = inp.value.slice(formulaInsertStart + formulaInsertLength);
 
   inp.value = before + refText + after;
@@ -7998,6 +8101,7 @@ function insertFormulaRef(anchorRef, endRef)
   saveSheetToFile();
 
   renderRangeSelection();
+  refreshRefHighlights();
 }
 
 function renderRangeSelection()
@@ -8011,7 +8115,10 @@ function renderRangeSelection()
   );
 
   if (!selectionAnchor || !selectionEnd || selectionAnchor === selectionEnd)
+  {
+    updateHeaderHighlights();
     return;
+  }
 
   var anchor = parseName(selectionAnchor),
       end = parseName(selectionEnd);
@@ -8039,6 +8146,7 @@ function renderRangeSelection()
   document.getElementById('cell-ref').value = selectionAnchor + ':' + selectionEnd;
 
   refreshFillHandle();
+  updateHeaderHighlights();
 }
 
 // ── FILL HANDLE (drag-fill, like Excel/Sheets) ──
@@ -8088,6 +8196,386 @@ function removeFillHandle()
   if (handle)
     handle.remove();
 }
+
+// ── FORMULA REFERENCE HIGHLIGHTS ──
+// While a formula is being edited (in-cell or in the bar) — or a cell holding
+// one is selected — every cell/range reference in it gets a colored box on
+// the grid. The boxes are live: dragging an edge moves the reference,
+// dragging a range's corner handle resizes it, and the formula text updates
+// as you go. Only box edges/handles take pointer events, so the cells inside
+// stay clickable.
+
+var REF_BOX_COLORS = ['#4a7fa8', '#c0574a', '#5a9a6e', '#9d6fd1', '#d18b3f', '#3fa7b0', '#d4a843'];
+
+var refHighlights = [];  // tokens of the highlighted formula, in text order
+var refBoxDrag = null;   // active box drag: {index, mode, src, lastRow, lastCol, anchorRow, anchorCol}
+
+// Where the highlighted formula lives right now: the in-cell edit, the
+// formula bar, or (fallback) the selected cell's stored value.
+function refHighlightSource()
+{
+  if (editingCell)
+  {
+    var inp = document.getElementById('inp-' + editingCell);
+    if (inp && !inp.readOnly)
+      return { ref: editingCell, inp: inp, viaBar: false, editing: true };
+  }
+
+  var bar = document.getElementById('formula-bar');
+  if (document.activeElement === bar && bar.value.startsWith('='))
+    return { ref: document.getElementById('cell-ref').value, inp: bar, viaBar: true, editing: true };
+
+  if (selectionAnchor && (!selectionEnd || selectionEnd === selectionAnchor))
+    return { ref: selectionAnchor, inp: null, viaBar: false, editing: false };
+
+  return null;
+}
+
+function refSourceText(src)
+{
+  return src.inp ? src.inp.value : (sheetData[src.ref] || '');
+}
+
+// Classifies one matched reference and normalizes it into a grid box
+// (r1<=r2, c1<=c2). d holds the '$' markers so moving/resizing keeps them.
+function refTokenInfo(text)
+{
+  var m;
+
+  if ((m = text.match(/^(\$?)([A-Z]{1,2})(\$?)(\d+):(\$?)([A-Z]{1,2})(\$?)(\d+)$/)))
+  {
+    var ca = colIndex(m[2]), cb = colIndex(m[6]), ra = +m[4], rb = +m[8];
+    return { kind: 'range', c1: Math.min(ca, cb), c2: Math.max(ca, cb),
+             r1: Math.min(ra, rb), r2: Math.max(ra, rb), d: [m[1], m[3], m[5], m[7]] };
+  }
+
+  if ((m = text.match(/^(\$?)([A-Z]{1,2}):(\$?)([A-Z]{1,2})$/)))
+  {
+    var cc = colIndex(m[2]), cd = colIndex(m[4]);
+    return { kind: 'col', c1: Math.min(cc, cd), c2: Math.max(cc, cd), d: [m[1], m[3]] };
+  }
+
+  if ((m = text.match(/^(\$?)(\d+):(\$?)(\d+)$/)))
+  {
+    var re = +m[2], rf = +m[4];
+    if (re < 1 || rf < 1) return null;
+    return { kind: 'row', r1: Math.min(re, rf), r2: Math.max(re, rf), d: [m[1], m[3]] };
+  }
+
+  if ((m = text.match(/^(\$?)([A-Z]{1,2})(\$?)(\d+)$/)))
+    return { kind: 'cell', c1: colIndex(m[2]), c2: colIndex(m[2]), r1: +m[4], r2: +m[4], d: [m[1], m[3]] };
+
+  return null;
+}
+
+function refTokenText(tok)
+{
+  var d = tok.d;
+
+  if (tok.kind === 'cell') return d[0] + colName(tok.c1) + d[1] + tok.r1;
+  if (tok.kind === 'col')  return d[0] + colName(tok.c1) + ':' + d[1] + colName(tok.c2);
+  if (tok.kind === 'row')  return d[0] + tok.r1 + ':' + d[1] + tok.r2;
+
+  return d[0] + colName(tok.c1) + d[1] + tok.r1 + ':' + d[2] + colName(tok.c2) + d[3] + tok.r2;
+}
+
+// Parses cell refs (A3), ranges (A1:B3) and whole-column/row ranges (A:A,
+// 4:4) out of a formula's text, with their offsets, so each can later be
+// replaced in place. Quoted strings and cross-tab [Tab](A1) links are masked
+// (same length, so offsets hold) to keep their contents from reading as refs.
+function parseFormulaRefTokens(text)
+{
+  if (!text || !text.startsWith('='))
+    return [];
+
+  var masked = text
+    .replace(/"[^"]*"|'[^']*'/g, function(m){ return m.replace(/./g, ' '); })
+    .replace(/\[[^\]]*\]\([^)]*\)/g, function(m){ return m.replace(/./g, ' '); });
+
+  var re = /(?<![A-Za-z0-9_$:])(?:\$?[A-Z]{1,2}\$?\d+:\$?[A-Z]{1,2}\$?\d+|\$?[A-Z]{1,2}:\$?[A-Z]{1,2}|\$?\d+:\$?\d+|\$?[A-Z]{1,2}\$?\d+)(?![A-Za-z0-9_$:])/g,
+      tokens = [],
+      m;
+
+  while ((m = re.exec(masked)))
+  {
+    var info = refTokenInfo(m[0]);
+    if (!info) continue;
+
+    info.start = m.index;
+    info.end = m.index + m[0].length;
+    info.text = m[0];
+    tokens.push(info);
+  }
+
+  return tokens;
+}
+
+// Pixel geometry of a token's box, relative to the ref layer (which sits at
+// the grid's content origin). Whole-column/row boxes span the current grid.
+function refBoxGeometry(tok)
+{
+  var r1 = tok.kind === 'col' ? 1 : tok.r1,
+      r2 = tok.kind === 'col' ? ROWS : Math.min(tok.r2, ROWS),
+      c1 = tok.kind === 'row' ? 0 : tok.c1,
+      c2 = tok.kind === 'row' ? COLS - 1 : Math.min(tok.c2, COLS - 1);
+
+  if (r1 > ROWS || c1 > COLS - 1)
+    return null;
+
+  var layer = document.getElementById('sheet-ref-layer'),
+      tdA = document.getElementById('cell-' + colName(c1) + r1),
+      tdB = document.getElementById('cell-' + colName(c2) + r2);
+
+  // Cells hidden by a merge report zero size; skip rather than draw a
+  // zero-anchored box.
+  if (!layer || !tdA || !tdB || !tdA.offsetWidth || !tdB.offsetWidth)
+    return null;
+
+  var la = layer.getBoundingClientRect(),
+      ra = tdA.getBoundingClientRect(),
+      rb = tdB.getBoundingClientRect();
+
+  return { left: ra.left - la.left, top: ra.top - la.top,
+           width: rb.right - ra.left, height: rb.bottom - ra.top };
+}
+
+function buildRefBoxElement(tok, index)
+{
+  var geo = refBoxGeometry(tok);
+  if (!geo)
+    return null;
+
+  var color = REF_BOX_COLORS[index % REF_BOX_COLORS.length],
+      box = document.createElement('div');
+
+  box.className = 'ref-box';
+  box.style.left = geo.left + 'px';
+  box.style.top = geo.top + 'px';
+  box.style.width = geo.width + 'px';
+  box.style.height = geo.height + 'px';
+  box.style.borderColor = color;
+  box.style.background = color + '14';
+
+  ['top', 'right', 'bottom', 'left'].forEach(function(side)
+  {
+    var edge = document.createElement('div');
+    edge.className = 'ref-box-edge ' + side;
+    edge.addEventListener('mousedown', function(e){ startRefBoxDrag(e, index, 'move'); });
+    box.appendChild(edge);
+  });
+
+  if (tok.kind !== 'cell')
+  {
+    var handle = document.createElement('div');
+    handle.className = 'ref-box-size';
+    handle.style.background = color;
+    handle.addEventListener('mousedown', function(e){ startRefBoxDrag(e, index, 'resize'); });
+    box.appendChild(handle);
+  }
+
+  return box;
+}
+
+function refreshRefHighlights()
+{
+  var layer = document.getElementById('sheet-ref-layer');
+  if (!layer)
+    return;
+
+  layer.innerHTML = '';
+  refHighlights = [];
+
+  var src = refHighlightSource();
+  if (!src)
+    return;
+
+  refHighlights = parseFormulaRefTokens(refSourceText(src));
+
+  refHighlights.forEach(function(tok, i)
+  {
+    var el = buildRefBoxElement(tok, i);
+    if (el) layer.appendChild(el);
+  });
+}
+
+// The grid cell under a viewport point, looked up through whatever element
+// is there (usually the cell's own input).
+function sheetCellFromPoint(x, y)
+{
+  var el = document.elementFromPoint(x, y);
+
+  while (el && el !== document.body)
+  {
+    if (el.id && el.id.indexOf('cell-') === 0)
+    {
+      var p = parseName(el.id.slice(5));
+      if (p) return { row: p.row, col: colIndex(p.col) };
+    }
+    el = el.parentElement;
+  }
+
+  return null;
+}
+
+function startRefBoxDrag(mouseEvent, index, mode)
+{
+  if (mouseEvent.button !== 0)
+    return;
+
+  var src = refHighlightSource(),
+      tok = refHighlights[index];
+
+  if (!src || !tok)
+    return;
+
+  // Keeps focus (and the mid-edit state) in whichever input holds the formula.
+  mouseEvent.preventDefault();
+  mouseEvent.stopPropagation();
+
+  // Dragging on a committed (not-being-edited) formula rewrites it in place,
+  // so it gets its own undo step; an active edit already snapshotted.
+  if (!src.editing)
+    sheetSnapshotForUndo();
+
+  var cell = sheetCellFromPoint(mouseEvent.clientX, mouseEvent.clientY);
+
+  refBoxDrag = {
+    index: index,
+    mode: mode,
+    src: src,
+    lastRow: cell ? cell.row : (tok.kind === 'col' ? 1 : tok.r1),
+    lastCol: cell ? cell.col : (tok.kind === 'row' ? 0 : tok.c1),
+    anchorRow: tok.kind === 'col' ? 1 : tok.r1,
+    anchorCol: tok.kind === 'row' ? 0 : tok.c1
+  };
+
+  var layer = document.getElementById('sheet-ref-layer');
+  if (layer) layer.classList.add('dragging');
+}
+
+// Writes the (moved/resized) token back into the formula text and refreshes
+// everything that mirrors it.
+function applyRefTokenEdit(tok)
+{
+  var src = refBoxDrag.src,
+      text = refSourceText(src),
+      newText = refTokenText(tok),
+      full = text.slice(0, tok.start) + newText + text.slice(tok.end);
+
+  if (src.inp)
+  {
+    src.inp.value = full;
+    var caret = tok.start + newText.length;
+    src.inp.setSelectionRange(caret, caret);
+  }
+
+  sheetData[src.ref] = full;
+
+  // Bar editing mirrors the raw text into the cell input; the committed-cell
+  // case mirrors it into the bar instead.
+  if (src.viaBar)
+  {
+    var cellInp = document.getElementById('inp-' + src.ref);
+    if (cellInp) cellInp.value = full;
+  }
+  if (!src.editing)
+    document.getElementById('formula-bar').value = full;
+
+  evaluateFormulas(src.editing ? src.ref : undefined);
+  saveSheetToFile();
+
+  // Re-parse: offsets after the replaced token have shifted.
+  refreshRefHighlights();
+}
+
+document.addEventListener
+(
+  'mousemove',
+  function(mouseEvent)
+  {
+    if (!refBoxDrag)
+      return;
+
+    var cell = sheetCellFromPoint(mouseEvent.clientX, mouseEvent.clientY);
+    if (!cell)
+      return;
+
+    var tok = refHighlights[refBoxDrag.index];
+    if (!tok)
+    {
+      refBoxDrag = null;
+      return;
+    }
+
+    var changed = false;
+
+    if (refBoxDrag.mode === 'move')
+    {
+      var dr = cell.row - refBoxDrag.lastRow,
+          dc = cell.col - refBoxDrag.lastCol;
+
+      if (tok.kind === 'col') dr = 0;
+      if (tok.kind === 'row') dc = 0;
+
+      // Clamp so the box never slides off the top/left of the sheet.
+      if (tok.r1 !== undefined) dr = Math.max(dr, 1 - tok.r1);
+      if (tok.c1 !== undefined) dc = Math.max(dc, -tok.c1);
+
+      if (dr || dc)
+      {
+        if (tok.r1 !== undefined) { tok.r1 += dr; tok.r2 += dr; }
+        if (tok.c1 !== undefined) { tok.c1 += dc; tok.c2 += dc; }
+        changed = true;
+      }
+    }
+    else // resize: the corner opposite the handle stays anchored
+    {
+      var nr1 = tok.r1, nr2 = tok.r2, nc1 = tok.c1, nc2 = tok.c2;
+
+      if (tok.kind !== 'col')
+      {
+        nr1 = Math.min(refBoxDrag.anchorRow, cell.row);
+        nr2 = Math.max(refBoxDrag.anchorRow, cell.row);
+      }
+      if (tok.kind !== 'row')
+      {
+        nc1 = Math.min(refBoxDrag.anchorCol, cell.col);
+        nc2 = Math.max(refBoxDrag.anchorCol, cell.col);
+      }
+
+      if (nr1 !== tok.r1 || nr2 !== tok.r2 || nc1 !== tok.c1 || nc2 !== tok.c2)
+      {
+        tok.r1 = nr1; tok.r2 = nr2; tok.c1 = nc1; tok.c2 = nc2;
+        changed = true;
+      }
+    }
+
+    refBoxDrag.lastRow = cell.row;
+    refBoxDrag.lastCol = cell.col;
+
+    if (changed)
+      applyRefTokenEdit(tok);
+  }
+);
+
+document.addEventListener
+(
+  'mouseup',
+  function()
+  {
+    if (!refBoxDrag)
+      return;
+
+    var src = refBoxDrag.src;
+    refBoxDrag = null;
+
+    var layer = document.getElementById('sheet-ref-layer');
+    if (layer) layer.classList.remove('dragging');
+
+    if (src.editing && src.inp)
+      src.inp.focus();
+  }
+);
 
 function getSelectionBoundingBox()
 {
@@ -8539,6 +9027,7 @@ function onCellInput(name)
   evaluateFormulas(name);
   saveSheetToFile();
   updateFunctionSuggestions(name);
+  refreshRefHighlights();
 }
 
 function onCellBlur(name)
@@ -8559,6 +9048,7 @@ function onCellBlur(name)
 
   hideFunctionSuggestions();
   refreshFillHandle();
+  refreshRefHighlights();
 }
 
 function getSelectionRefs(anchorRef, endRef)
@@ -8615,6 +9105,7 @@ function deleteSelectedCells()
   document.getElementById('formula-bar').value = '';
   evaluateFormulas();
   saveSheetToFile();
+  refreshRefHighlights();
 }
 
 function cellKey(keyEvent, name)
@@ -8755,6 +9246,8 @@ function formulaBarInput()
   var inp = document.getElementById('inp-' + ref);
   if (inp)
     inp.value = val;
+
+  refreshRefHighlights();
 }
 
 // Splits a function's argument list on top-level commas, skipping commas
@@ -8889,8 +9382,60 @@ function cellNumericValue(ref)
   return isNaN(n) ? 0 : n;
 }
 
+// The used extent of the active page — whole-column (A:A) and whole-row
+// (4:4) ranges cover this instead of the unbounded grid, so they only walk
+// cells that actually hold something.
+function sheetUsedExtent()
+{
+  var maxRow = 1, maxCol = 0;
+
+  Object.keys(sheetData).forEach(function(ref)
+  {
+    if (!sheetData[ref]) return;
+    var p = parseName(ref);
+    if (!p) return;
+    if (p.row > maxRow) maxRow = p.row;
+    var c = colIndex(p.col);
+    if (c > maxCol) maxCol = c;
+  });
+
+  return { maxRow: maxRow, maxCol: maxCol };
+}
+
 function getRangeRefs(range)
 {
+  var text = range.trim(), refs, i, j;
+
+  // Whole-column range: A:A grabs one column, A:C a block of columns.
+  var colRange = text.match(/^\$?([A-Z]{1,2})\s*:\s*\$?([A-Z]{1,2})$/);
+  if (colRange)
+  {
+    var cLo = colIndex(colRange[1]), cHi = colIndex(colRange[2]);
+    if (cLo > cHi) { var cT = cLo; cLo = cHi; cHi = cT; }
+
+    refs = [];
+    var lastRow = sheetUsedExtent().maxRow;
+    for (i = 1; i <= lastRow; i++)
+      for (j = cLo; j <= cHi; j++)
+        refs.push(colName(j) + i);
+    return refs;
+  }
+
+  // Whole-row range: 4:4 grabs one row, 2:5 a block of rows.
+  var rowRange = text.match(/^\$?(\d+)\s*:\s*\$?(\d+)$/);
+  if (rowRange)
+  {
+    var rLo = parseInt(rowRange[1]), rHi = parseInt(rowRange[2]);
+    if (rLo > rHi) { var rT = rLo; rLo = rHi; rHi = rT; }
+
+    refs = [];
+    var lastCol = sheetUsedExtent().maxCol;
+    for (i = rLo; i <= rHi; i++)
+      for (j = 0; j <= lastCol; j++)
+        refs.push(colName(j) + i);
+    return refs;
+  }
+
   var parts = range.split(':');
 
   if (parts.length === 1)
@@ -9075,12 +9620,71 @@ function stdevRange(r)
   return Math.sqrt(varianceRange(r));
 }
 
+// INDEX(range, row, [col]) — the value at a position inside a range. For a
+// single-row range the second argument indexes along the row (like Excel's
+// one-dimensional form), otherwise it picks the row and the optional third
+// argument picks the column (both 1-based, defaulting to 1). The result is
+// formatted like a substituted cell ref, so text comes back quoted and blank
+// cells come back as 0.
+function indexRange(argText)
+{
+  var args = splitTopLevelArgs(argText),
+      refs = argCellRefs(args[0]);
+
+  if (!refs || !refs.length)
+    throw new Error('INDEX needs a range');
+
+  var minRow = Infinity, maxRow = 0, minCol = Infinity, maxCol = 0;
+
+  refs.forEach(function(ref)
+  {
+    var p = parseName(ref);
+    if (!p) return;
+    minRow = Math.min(minRow, p.row); maxRow = Math.max(maxRow, p.row);
+    minCol = Math.min(minCol, colIndex(p.col)); maxCol = Math.max(maxCol, colIndex(p.col));
+  });
+
+  var height = maxRow - minRow + 1,
+      width = maxCol - minCol + 1,
+      rowNum = args[1] !== undefined ? resolveValue(args[1]) : 1,
+      colNum;
+
+  if (args[2] !== undefined)
+    colNum = resolveValue(args[2]);
+  else if (height === 1 && width > 1)
+  {
+    colNum = rowNum;
+    rowNum = 1;
+  }
+  else
+    colNum = 1;
+
+  if (rowNum < 1 || rowNum > height || colNum < 1 || colNum > width)
+    throw new Error('INDEX out of range');
+
+  var ref = colName(minCol + colNum - 1) + (minRow + rowNum - 1),
+      v = sheetData[ref];
+
+  if (v === undefined || v === '')
+    return '0';
+
+  if (v.startsWith('='))
+    v = evalCell(ref, v);
+
+  var upper = String(v).toUpperCase();
+
+  if (upper === 'TRUE' || upper === 'FALSE')
+    return upper.toLowerCase();
+
+  return isNaN(parseFloat(v)) ? JSON.stringify(v) : v;
+}
+
 // Runs every named-function pattern once. Each pattern requires a function
 // name not preceded by a letter (so e.g. OR doesn't match inside FLOOR, or
 // AND inside RAND) and an argument with no unresolved nested parens. evalCell
 // re-runs this pass until the text stops changing, which is what lets calls
 // like ROUND(SUM(A1:A4),2) resolve correctly regardless of nesting order.
-function applyFunctionPass(expr)
+function applyFunctionPass(expr, selfRef)
 {
   return expr
     .replace(/(?<![A-Za-z])SUM\(([^()]+)\)/gi, function(_, r) { return sumRange(r); })
@@ -9095,6 +9699,31 @@ function applyFunctionPass(expr)
     .replace(/(?<![A-Za-z])PRODUCT\(([^()]+)\)/gi, function(_, r) { return productRange(r); })
     .replace(/(?<![A-Za-z])STDEV\(([^()]+)\)/gi, function(_, r) { return stdevRange(r); })
     .replace(/(?<![A-Za-z])VAR\(([^()]+)\)/gi, function(_, r) { return varianceRange(r); })
+    .replace(/(?<![A-Za-z])INDEX\(([^()]+)\)/gi, function(_, a) { return indexRange(a); })
+    .replace
+    (
+      /(?<![A-Za-z])ROW\(([^()]*)\)/gi,
+      function(match, a)
+      {
+        var p = parseName((a.trim() || selfRef || '').replace(/\$/g, '').toUpperCase());
+        return p ? p.row : match;
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])COLUMN\(([^()]*)\)/gi,
+      function(match, a)
+      {
+        var p = parseName((a.trim() || selfRef || '').replace(/\$/g, '').toUpperCase());
+        return p ? colIndex(p.col) + 1 : match;
+      }
+    )
+    .replace(/(?<![A-Za-z])SIN\(([^()]+)\)/gi, function(_, a) { return Math.sin(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])COS\(([^()]+)\)/gi, function(_, a) { return Math.cos(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])TAN\(([^()]+)\)/gi, function(_, a) { return Math.tan(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])ASIN\(([^()]+)\)/gi, function(_, a) { return Math.asin(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])ACOS\(([^()]+)\)/gi, function(_, a) { return Math.acos(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])ATAN\(([^()]+)\)/gi, function(_, a) { return Math.atan(resolveValue(a)); })
     .replace(/(?<![A-Za-z])ABS\(([^()]+)\)/gi, function(_, a) { return Math.abs(resolveValue(a)); })
     .replace(/(?<![A-Za-z])SQRT\(([^()]+)\)/gi, function(_, a) { return Math.sqrt(resolveValue(a)); })
     .replace(/(?<![A-Za-z])SIGN\(([^()]+)\)/gi, function(_, a) { return Math.sign(resolveValue(a)); })
@@ -9350,10 +9979,20 @@ function substitutePageRefs(exprText)
   );
 }
 
+// Refs currently being evaluated, so a formula that (directly or through a
+// whole-column range like SUM(A:A) sitting inside column A) references
+// itself resolves the cycle as 0 instead of recursing forever.
+var evalCellInProgress = {};
+
 function evalCell(ref, val)
 {
   if (!val || !val.startsWith('='))
     return val;
+
+  if (evalCellInProgress[ref])
+    return '0';
+
+  evalCellInProgress[ref] = true;
 
   try
   {
@@ -9364,7 +10003,7 @@ function evalCell(ref, val)
     do
     {
       previous = expr;
-      expr = applyFunctionPass(expr);
+      expr = applyFunctionPass(expr, ref);
 
       // When no function matched (their arg regexes require paren-free
       // arguments), collapse innermost BARE (…) groups to values so e.g.
@@ -9394,6 +10033,10 @@ function evalCell(ref, val)
   catch(e)
   {
     return '#ERR';
+  }
+  finally
+  {
+    delete evalCellInProgress[ref];
   }
 }
 
@@ -9426,19 +10069,30 @@ function evaluateFormulas(skipRef)
 }
 
 // Strips the cell-decoration suffixes off a serialized cell line's payload
-// (everything after "REF="): a trailing `;#hex` paints the background and a
-// trailing `:B2,B3` lists cells merged into this one. They may be chained in
-// either order (B1=5:B2,B3;#FAFAFA == B1=5;#FAFAFA:B2,B3) — both parse the
-// same because stripping repeats from the end until nothing matches.
+// (everything after "REF="): a trailing `;#hex` paints the background, a
+// trailing `;txt#hex` paints the text, and a trailing `:B2,B3` lists cells
+// merged into this one. They may be chained in any order
+// (B1=5:B2,B3;#FAFAFA == B1=5;#FAFAFA:B2,B3) — all parse the same because
+// stripping repeats from the end until nothing matches.
 function stripCellSuffixes(rest)
 {
   var color = null,
+      textColor = null,
       merged = null,
       changed = true;
 
   while (changed)
   {
     changed = false;
+
+    var mt = rest.match(/;txt(#[0-9A-Fa-f]{3}(?:[0-9A-Fa-f]{3})?(?:[0-9A-Fa-f]{2})?)\s*$/);
+    if (mt && textColor === null)
+    {
+      textColor = mt[1];
+      rest = rest.slice(0, rest.length - mt[0].length);
+      changed = true;
+      continue;
+    }
 
     var mc = rest.match(/;(#[0-9A-Fa-f]{3}(?:[0-9A-Fa-f]{3})?(?:[0-9A-Fa-f]{2})?)\s*$/);
     if (mc && color === null)
@@ -9459,7 +10113,7 @@ function stripCellSuffixes(rest)
     }
   }
 
-  return { rest: rest, color: color, merged: merged };
+  return { rest: rest, color: color, textColor: textColor, merged: merged };
 }
 
 // ── SHEET TABS (pages) ──
@@ -9490,9 +10144,11 @@ function aliasActiveSheetPage()
 {
   var page = sheetPages[sheetPageIdx];
   if (!page.colors) page.colors = {};
+  if (!page.textColors) page.textColors = {};
   if (!page.merges) page.merges = {};
   sheetData = page.data;
   sheetColors = page.colors;
+  sheetTextColors = page.textColors;
   sheetMerges = page.merges;
 }
 
@@ -9558,7 +10214,7 @@ function uniqueSheetPageName(base, excludeIdx)
 
 function addSheetPage()
 {
-  var page = { name: uniqueSheetPageName('Sheet ' + (sheetPages.length + 1), -1), data: {}, colors: {}, merges: {} };
+  var page = { name: uniqueSheetPageName('Sheet ' + (sheetPages.length + 1), -1), data: {}, colors: {}, textColors: {}, merges: {} };
   sheetPages.push(page);
   switchSheetPage(sheetPages.length - 1);
   saveSheetToFile();
@@ -9670,7 +10326,7 @@ function loadSheetFile(f)
       // have no heading and fall into an implicit first page below.
       if (line.charAt(0) === '#')
       {
-        curPage = { name: line.replace(/^#+\s*/, '').trim() || ('Sheet ' + (sheetPages.length + 1)), data: {}, colors: {}, merges: {} };
+        curPage = { name: line.replace(/^#+\s*/, '').trim() || ('Sheet ' + (sheetPages.length + 1)), data: {}, colors: {}, textColors: {}, merges: {} };
         sheetPages.push(curPage);
         return;
       }
@@ -9682,7 +10338,7 @@ function loadSheetFile(f)
 
       if (!curPage)
       {
-        curPage = { name: 'Sheet 1', data: {}, colors: {}, merges: {} };
+        curPage = { name: 'Sheet 1', data: {}, colors: {}, textColors: {}, merges: {} };
         sheetPages.push(curPage);
       }
 
@@ -9691,8 +10347,9 @@ function loadSheetFile(f)
           rest = stripped.rest,
           formulaEnd = rest.indexOf('=');
 
-      if (stripped.color)  curPage.colors[ref] = stripped.color;
-      if (stripped.merged) curPage.merges[ref] = stripped.merged;
+      if (stripped.color)     curPage.colors[ref] = stripped.color;
+      if (stripped.textColor) curPage.textColors[ref] = stripped.textColor;
+      if (stripped.merged)    curPage.merges[ref] = stripped.merged;
 
       // Formula cells are written as ref=formula=result; the result is informational
       // (recomputed on load), so only the formula half is kept, with '=' restored.
@@ -9702,7 +10359,7 @@ function loadSheetFile(f)
   );
 
   if (!sheetPages.length)
-    sheetPages = [{ name: 'Sheet 1', data: {}, colors: {}, merges: {} }];
+    sheetPages = [{ name: 'Sheet 1', data: {}, colors: {}, textColors: {}, merges: {} }];
 
   sheetPageIdx = 0;
   aliasActiveSheetPage();
@@ -9758,8 +10415,19 @@ function applyCellDecorations()
     td.style.display = '';
     td.removeAttribute('colspan');
     td.removeAttribute('rowspan');
+    // Text color lives on the input (inputs don't inherit the td's color).
+    var inp = document.getElementById('inp-' + ref);
+    if (inp) inp.style.color = '';
   });
   decoratedCellRefs = [];
+
+  Object.keys(sheetTextColors).forEach(function(ref)
+  {
+    var inp = document.getElementById('inp-' + ref);
+    if (!inp || !sheetTextColors[ref]) return;
+    inp.style.color = sheetTextColors[ref];
+    decoratedCellRefs.push(ref);
+  });
 
   Object.keys(sheetColors).forEach(function(ref)
   {
@@ -9836,6 +10504,28 @@ function applyCellColor(color)
 
 function clearCellColor() { applyCellColor(null); }
 
+// Applies (or clears, with null) a text color to every cell in the current
+// selection rectangle — same shape as applyCellColor, different map.
+function applyCellTextColor(color)
+{
+  if (!selectionAnchor) return;
+  sheetSnapshotForUndo();
+
+  var box = getSelectionBoundingBox();
+  for (var r = box.rowStart; r <= box.rowEnd; r++)
+    for (var c = box.colStart; c <= box.colEnd; c++)
+    {
+      var ref = colName(c) + r;
+      if (color) sheetTextColors[ref] = color;
+      else delete sheetTextColors[ref];
+    }
+
+  applyCellDecorations();
+  saveSheetToFile();
+}
+
+function clearCellTextColor() { applyCellTextColor(null); }
+
 // ── Bucket split-button ──
 // The bucket itself paints the current selection with the last-chosen color;
 // the thin arrow beside it opens the color chooser. Choosing a color both
@@ -9866,6 +10556,37 @@ function onBucketColorChosen(color)
   try { localStorage.setItem('lk_bucket_color', color); } catch(e) {}
   paintBucketSwatch();
   applyCellColor(color);
+}
+
+// ── Text-color split-button ──
+// Works exactly like the bucket above, but colors the cells' text instead of
+// their background.
+
+var currentTextColor = (function()
+{
+  try { return localStorage.getItem('lk_text_color') || '#d4a843'; }
+  catch(e) { return '#d4a843'; }
+})();
+
+function paintTextSwatch()
+{
+  var sw = document.getElementById('text-swatch');
+  if (sw) sw.style.background = currentTextColor;
+  var inp = document.getElementById('text-color-input');
+  if (inp) inp.value = currentTextColor;
+}
+
+function applyTextColor()
+{
+  applyCellTextColor(currentTextColor);
+}
+
+function onTextColorChosen(color)
+{
+  currentTextColor = color;
+  try { localStorage.setItem('lk_text_color', color); } catch(e) {}
+  paintTextSwatch();
+  applyCellTextColor(color);
 }
 
 // Merges the selected rectangle into one big cell (top-left becomes the
@@ -9916,7 +10637,7 @@ function toggleMergeSelection()
 
 function sheetSnapshotForUndo()
 {
-  sheetUndoStack.push({ data: JSON.parse(JSON.stringify(sheetData)), charts: JSON.parse(JSON.stringify(sheetCharts)), colors: JSON.parse(JSON.stringify(sheetColors)), merges: JSON.parse(JSON.stringify(sheetMerges)) });
+  sheetUndoStack.push({ data: JSON.parse(JSON.stringify(sheetData)), charts: JSON.parse(JSON.stringify(sheetCharts)), colors: JSON.parse(JSON.stringify(sheetColors)), textColors: JSON.parse(JSON.stringify(sheetTextColors)), merges: JSON.parse(JSON.stringify(sheetMerges)) });
   sheetRedoStack = [];
 
   if (sheetUndoStack.length > 100)
@@ -9928,16 +10649,18 @@ function sheetRestoreSnapshot(fromStack, toStack)
   if (!fromStack.length)
     return;
 
-  toStack.push({ data: JSON.parse(JSON.stringify(sheetData)), charts: JSON.parse(JSON.stringify(sheetCharts)), colors: JSON.parse(JSON.stringify(sheetColors)), merges: JSON.parse(JSON.stringify(sheetMerges)) });
+  toStack.push({ data: JSON.parse(JSON.stringify(sheetData)), charts: JSON.parse(JSON.stringify(sheetCharts)), colors: JSON.parse(JSON.stringify(sheetColors)), textColors: JSON.parse(JSON.stringify(sheetTextColors)), merges: JSON.parse(JSON.stringify(sheetMerges)) });
 
   var snap = fromStack.pop();
 
   sheetData = snap.data;
   sheetColors = snap.colors || {};
+  sheetTextColors = snap.textColors || {};
   sheetMerges = snap.merges || {};
   var snapPage = sheetPages[sheetPageIdx]; // keep the page aliases in sync
   snapPage.data = sheetData;
   snapPage.colors = sheetColors;
+  snapPage.textColors = sheetTextColors;
   snapPage.merges = sheetMerges;
   sheetCharts = snap.charts;
   ensureGridFitsData(sheetData);
@@ -9959,6 +10682,7 @@ function sheetRestoreSnapshot(fromStack, toStack)
   renderSheetCharts();
   evaluateFormulas();
   saveSheetToFile();
+  refreshRefHighlights();
 }
 
 function sheetUndo()
@@ -9991,10 +10715,12 @@ function saveSheetToFile()
     // far-out cells to it would silently drop them from the file. Cells with
     // only a color/merge (no value) still get a line, so the decoration keeps.
     var colors = page.colors || {},
+        textColors = page.textColors || {},
         merges = page.merges || {},
         cellKeys = {};
     Object.keys(page.data).forEach(function(ref){ if (page.data[ref]) cellKeys[ref] = true; });
     Object.keys(colors).forEach(function(ref){ if (colors[ref]) cellKeys[ref] = true; });
+    Object.keys(textColors).forEach(function(ref){ if (textColors[ref]) cellKeys[ref] = true; });
     Object.keys(merges).forEach(function(ref){ if (merges[ref] && merges[ref].length) cellKeys[ref] = true; });
 
     Object.keys(cellKeys)
@@ -10009,6 +10735,7 @@ function saveSheetToFile()
                        : c.ref + '=' + val;
         if (merges[c.ref] && merges[c.ref].length) cellLine += ':' + merges[c.ref].join(',');
         if (colors[c.ref]) cellLine += ';' + colors[c.ref];
+        if (textColors[c.ref]) cellLine += ';txt' + textColors[c.ref];
         out += cellLine + '\n';
       });
   });
@@ -10668,6 +11395,27 @@ var SHEET_FUNCTION_GROUPS =
     ]
   },
   {
+    category: 'Trigonometry',
+    functions:
+    [
+      { name: 'SIN(angle)', desc: 'Sine of an angle in radians.', example: '=SIN(PI()/2)' },
+      { name: 'COS(angle)', desc: 'Cosine of an angle in radians.', example: '=COS(A1)' },
+      { name: 'TAN(angle)', desc: 'Tangent of an angle in radians.', example: '=TAN(A1)' },
+      { name: 'ASIN(value)', desc: 'Inverse sine, in radians.', example: '=ASIN(A1)' },
+      { name: 'ACOS(value)', desc: 'Inverse cosine, in radians.', example: '=ACOS(A1)' },
+      { name: 'ATAN(value)', desc: 'Inverse tangent, in radians.', example: '=ATAN(A1)' }
+    ]
+  },
+  {
+    category: 'Lookup',
+    functions:
+    [
+      { name: 'INDEX(range, row, [col])', desc: 'Value at a position inside a range (1-based).', example: '=INDEX(A1:B10, 3, 2)' },
+      { name: 'ROW([ref])', desc: 'Row number of a reference, or of the formula\'s own cell.', example: '=ROW(B7)' },
+      { name: 'COLUMN([ref])', desc: 'Column number of a reference, or of the formula\'s own cell.', example: '=COLUMN(B7)' }
+    ]
+  },
+  {
     category: 'Text',
     functions:
     [
@@ -10722,7 +11470,9 @@ function renderFunctionHelp()
 
   var intro = '<div class="fx-help-intro">'+
                 'Start a cell with <code>=</code> to write a formula. Reference cells like '+
-                '<code>A1</code> or ranges like <code>A1:B3</code>. While editing a formula, '+
+                '<code>A1</code> or ranges like <code>A1:B3</code>. Whole columns and rows '+
+                'work too: <code>A:A</code> is everything in column A, <code>4:4</code> '+
+                'everything in row 4. While editing a formula, '+
                 'click or drag cells on the grid to insert their reference at the cursor. '+
                 'Functions can be nested, e.g. <code>=ROUND(SUM(A1:A4),1)</code>. Prefix a '+
                 'column or row with <code>$</code> (e.g. <code>$A$1</code>, <code>A$1</code>, '+

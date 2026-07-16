@@ -939,6 +939,17 @@ html, body
   width: 44px;
   text-align: right;
 }
+#sheet-grid th.row-header,
+#sheet-grid .col-header
+{
+  cursor: pointer;
+}
+/* Header cells covering the current selection. */
+#sheet-grid th.hl
+{
+  background: var(--accent-dim);
+  color: var(--text1);
+}
 #sheet-grid th:first-child
 {
   top: 0;
@@ -2106,6 +2117,55 @@ html, body
 }
 
 /* ── SHEET CHARTS (Chart.js, floating boxes over the grid) ── */
+/* Formula reference highlights: colored boxes over the cells a formula
+   mentions. Only the edges (move) and the corner handle (resize) take
+   pointer events, so the cells inside stay clickable; while dragging, the
+   whole layer goes transparent to the mouse so the cell under the pointer
+   can be found. */
+#sheet-ref-layer
+{
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.ref-box
+{
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+  border: 2px solid;
+  border-radius: 2px;
+}
+.ref-box-edge
+{
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+}
+.ref-box-edge.top    { left: 0; right: 0; top: -3px;    height: 7px; }
+.ref-box-edge.bottom { left: 0; right: 0; bottom: -3px; height: 7px; }
+.ref-box-edge.left   { top: 0; bottom: 0; left: -3px;   width: 7px; }
+.ref-box-edge.right  { top: 0; bottom: 0; right: -3px;  width: 7px; }
+.ref-box-size
+{
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--bg);
+  border-radius: 2px;
+  pointer-events: auto;
+  cursor: nwse-resize;
+}
+#sheet-ref-layer.dragging .ref-box-edge,
+#sheet-ref-layer.dragging .ref-box-size
+{
+  pointer-events: none;
+}
+
 #sheet-charts-layer
 {
   position: absolute;

@@ -18,7 +18,7 @@
   function loadApp() {
     gate.style.display = 'none';
     var script = document.createElement('script');
-    script.src = 'main.js?v=12'; // keep the version in step with index.html's asset tags
+    script.src = 'main.js?v=13'; // keep the version in step with index.html's asset tags
     document.body.appendChild(script);
   }
 
