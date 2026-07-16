@@ -3482,3 +3482,28 @@ mark.gs-hl
 .cell-color-btn input[type="color"] {
   position: absolute; inset: 0; opacity: 0; cursor: pointer; border: none; padding: 0;
 }
+
+/* Bucket split-button: the main bucket applies the current color, the thin
+   attached arrow opens the color chooser. */
+.tb-split { display: inline-flex; align-items: stretch; }
+.tb-split .tb-split-main {
+  position: relative; border-top-right-radius: 0; border-bottom-right-radius: 0;
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.tb-split .tb-split-main svg { width: 14px; height: 14px; }
+.bucket-swatch {
+  display: block; width: 14px; height: 3px; border-radius: 1px;
+  margin-top: 1px; background: #3a5a40;
+}
+.tb-split-arrow {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; cursor: pointer; overflow: hidden;
+  background: var(--bg3); border: 1px solid var(--border2); border-left: none;
+  border-top-right-radius: var(--radius); border-bottom-right-radius: var(--radius);
+  color: var(--text2);
+}
+.tb-split-arrow:hover { color: var(--accent); }
+.tb-split-arrow svg { width: 10px; height: 10px; }
+.tb-split-arrow input[type="color"] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer; border: none; padding: 0;
+}

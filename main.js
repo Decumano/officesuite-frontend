@@ -4435,12 +4435,7 @@ function buildChartDataFromCells(chartDef, cells)
   var data = buildCategoricalChartData(chartDef, grid);
   if (chartDef.type === 'pie' || chartDef.type === 'doughnut') data.datasets = data.datasets.slice(0, 1);
   if (chartDef.type === 'percent')
-    data.datasets = data.datasets.map(function(ds)
-    {
-      var total = chartDef.percentTotal ||
-                  ds.data.reduce(function(a, b){ return a + (parseFloat(b) || 0); }, 0);
-      return { label: ds.label, data: ds.data.map(function(v){ return total ? Math.round(((parseFloat(v) || 0) / total) * 1000) / 10 : 0; }) };
-    });
+    data = percentStackDatasets(data, chartDef);
   return data;
 }
 
@@ -7679,6 +7674,8 @@ function buildSheet()
   }
 
   document.getElementById('sheet-body').innerHTML = html;
+
+  paintBucketSwatch();
 }
 
 function sheetCellHtml(ref)
@@ -9839,6 +9836,38 @@ function applyCellColor(color)
 
 function clearCellColor() { applyCellColor(null); }
 
+// ── Bucket split-button ──
+// The bucket itself paints the current selection with the last-chosen color;
+// the thin arrow beside it opens the color chooser. Choosing a color both
+// remembers it (per browser) and applies it right away.
+
+var currentCellColor = (function()
+{
+  try { return localStorage.getItem('lk_bucket_color') || '#3a5a40'; }
+  catch(e) { return '#3a5a40'; }
+})();
+
+function paintBucketSwatch()
+{
+  var sw = document.getElementById('bucket-swatch');
+  if (sw) sw.style.background = currentCellColor;
+  var inp = document.getElementById('cell-color-input');
+  if (inp) inp.value = currentCellColor;
+}
+
+function applyBucketColor()
+{
+  applyCellColor(currentCellColor);
+}
+
+function onBucketColorChosen(color)
+{
+  currentCellColor = color;
+  try { localStorage.setItem('lk_bucket_color', color); } catch(e) {}
+  paintBucketSwatch();
+  applyCellColor(color);
+}
+
 // Merges the selected rectangle into one big cell (top-left becomes the
 // anchor), or splits it back apart when the selection sits on an existing
 // merge.
@@ -10179,39 +10208,60 @@ function buildChartData(chartDef)
   if (chartDef.type === 'pie' || chartDef.type === 'doughnut')
     data.datasets = data.datasets.slice(0, 1);
 
-  // % Columns: the range holds absolute values; each becomes a percentage of
-  // the designated total (chartDef.percentTotal), or of its own series' sum
-  // when no total was given — so the columns then read as percentages.
   if (chartDef.type === 'percent')
+    data = percentStackDatasets(data, chartDef);
+
+  return data;
+}
+
+// % Stacked: absolute values render as segments of 100%-stacked columns,
+// colored per series — a pie/doughnut reading, but as bars. A range with a
+// SINGLE data series pivots into one bar whose segments are the categories
+// (each category becomes its own colored, legended dataset), the closest
+// bar-shaped equivalent of a pie chart; multi-series ranges normalize each
+// category's stack. chartDef.percentTotal, when given, replaces the per-bar
+// sum as the 100% denominator, so bars may then top out below 100%.
+function percentStackDatasets(data, chartDef)
+{
+  if (!data.datasets.length)
+    return data;
+
+  function pct(v, total)
   {
-    var columnTotals = [];
+    return total ? Math.round(((parseFloat(v) || 0) / total) * 1000) / 10 : 0;
+  }
 
-    data.datasets.forEach(function(ds)
-    {
-      ds.data.forEach(function(v, i)
+  if (data.datasets.length === 1)
+  {
+    var ds = data.datasets[0],
+        total = chartDef.percentTotal ||
+                ds.data.reduce(function(a, b){ return a + (parseFloat(b) || 0); }, 0);
+
+    return {
+      labels: [ds.label || 'Total'],
+      datasets: data.labels.map(function(lab, i)
       {
-        columnTotals[i] = (columnTotals[i] || 0) + (parseFloat(v) || 0);
-      });
-    });
+        return { label: String(lab), data: [pct(ds.data[i], total)] };
+      })
+    };
+  }
 
-    data.datasets = data.datasets.map(function(ds)
+  var categoryTotals = data.labels.map(function(_, j)
+  {
+    return chartDef.percentTotal ||
+           data.datasets.reduce(function(a, ds){ return a + (parseFloat(ds.data[j]) || 0); }, 0);
+  });
+
+  return {
+    labels: data.labels,
+    datasets: data.datasets.map(function(ds)
     {
       return {
         label: ds.label,
-        backgroundColor: ds.backgroundColor,
-        borderColor: ds.borderColor,
-        borderWidth: ds.borderWidth,
-        stack: ds.stack,
-        data: ds.data.map(function(v, i)
-        {
-          var total = columnTotals[i];
-          return total ? ((parseFloat(v) || 0) / total) * 100 : 0;
-        })
+        data: ds.data.map(function(v, j){ return pct(v, categoryTotals[j]); })
       };
-    });
-  }
-
-  return data;
+    })
+  };
 }
 
 function buildChartScales(chartDef)
