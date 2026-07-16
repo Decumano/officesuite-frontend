@@ -10183,18 +10183,33 @@ function buildChartData(chartDef)
   // the designated total (chartDef.percentTotal), or of its own series' sum
   // when no total was given — so the columns then read as percentages.
   if (chartDef.type === 'percent')
+  {
+    var columnTotals = [];
+
+    data.datasets.forEach(function(ds)
+    {
+      ds.data.forEach(function(v, i)
+      {
+        columnTotals[i] = (columnTotals[i] || 0) + (parseFloat(v) || 0);
+      });
+    });
+
     data.datasets = data.datasets.map(function(ds)
     {
-      var total = chartDef.percentTotal ||
-                  ds.data.reduce(function(a, b){ return a + (parseFloat(b) || 0); }, 0);
       return {
         label: ds.label,
-        data: ds.data.map(function(v)
+        backgroundColor: ds.backgroundColor,
+        borderColor: ds.borderColor,
+        borderWidth: ds.borderWidth,
+        stack: ds.stack,
+        data: ds.data.map(function(v, i)
         {
-          return total ? Math.round(((parseFloat(v) || 0) / total) * 1000) / 10 : 0;
+          var total = columnTotals[i];
+          return total ? ((parseFloat(v) || 0) / total) * 100 : 0;
         })
       };
     });
+  }
 
   return data;
 }
@@ -10220,9 +10235,9 @@ function buildChartScales(chartDef)
   if (chartDef.type === 'percent')
   {
     return  {
-              x: { grid: { color: gridColor }, ticks: { color: tickColor } },
+              x: { grid: { color: gridColor }, ticks: { color: tickColor }, stacked: true },
               y: { beginAtZero: true, grid: { color: gridColor },
-                   ticks: { color: tickColor, callback: function(v){ return v + '%'; } } }
+                   ticks: { color: tickColor, callback: function(v){ return v + '%'; } }, stacked: true }
             };
   }
 
