@@ -3498,8 +3498,7 @@ mark.gs-hl
 .tb-split-arrow {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
   width: 13px; cursor: pointer; overflow: hidden;
-  background: var(--bg3); border: 1px solid var(--border2); border-left: none;
-  border-top-right-radius: var(--radius); border-bottom-right-radius: var(--radius);
+  border-radius: 0px 6px 6px 0px;
   color: var(--text2);
 }
 .tb-split-arrow:hover { color: var(--accent); }
