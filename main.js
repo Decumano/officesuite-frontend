@@ -8577,6 +8577,127 @@ document.addEventListener
   }
 );
 
+// ── DRAG AUTO-SCROLL ──
+// While any grid drag is active (selection, formula ref picking, fill,
+// reference-box move/resize, chart move/resize), the sheet scrolls by itself
+// when the pointer nears the container's edges — the closer to the edge, the
+// faster. Each scroll step retargets the drag, since the grid moved under a
+// pointer that didn't.
+
+var AUTOSCROLL_ZONE = 48; // px from an edge where scrolling kicks in
+var AUTOSCROLL_MAX = 28;  // px per frame at (or past) the very edge
+
+var autoScrollMouse = null;
+var autoScrollRaf = null;
+
+function sheetDragActive()
+{
+  return isDragging || isRefDragging || isFillDragging || !!refBoxDrag || !!sheetChartDrag;
+}
+
+document.addEventListener
+(
+  'mousemove',
+  function(mouseEvent)
+  {
+    if (!sheetDragActive())
+    {
+      autoScrollMouse = null;
+      return;
+    }
+
+    autoScrollMouse = { x: mouseEvent.clientX, y: mouseEvent.clientY };
+
+    if (!autoScrollRaf)
+      autoScrollRaf = requestAnimationFrame(autoScrollStep);
+  }
+);
+
+function autoScrollSpeed(pos, lo, hi)
+{
+  var depth;
+
+  if (pos < lo + AUTOSCROLL_ZONE)
+  {
+    depth = Math.min(1, (lo + AUTOSCROLL_ZONE - pos) / AUTOSCROLL_ZONE);
+    return -Math.ceil(depth * AUTOSCROLL_MAX);
+  }
+
+  if (pos > hi - AUTOSCROLL_ZONE)
+  {
+    depth = Math.min(1, (pos - (hi - AUTOSCROLL_ZONE)) / AUTOSCROLL_ZONE);
+    return Math.ceil(depth * AUTOSCROLL_MAX);
+  }
+
+  return 0;
+}
+
+function autoScrollStep()
+{
+  autoScrollRaf = null;
+
+  if (!sheetDragActive() || !autoScrollMouse)
+    return;
+
+  var container = document.getElementById('sheet-container');
+  if (!container)
+    return;
+
+  var rect = container.getBoundingClientRect(),
+      dx = autoScrollSpeed(autoScrollMouse.x, rect.left, rect.right),
+      dy = autoScrollSpeed(autoScrollMouse.y, rect.top, rect.bottom);
+
+  if (dx || dy)
+  {
+    var beforeLeft = container.scrollLeft,
+        beforeTop = container.scrollTop;
+
+    container.scrollLeft += dx;
+    container.scrollTop += dy;
+
+    var movedX = container.scrollLeft - beforeLeft,
+        movedY = container.scrollTop - beforeTop;
+
+    if (movedX || movedY)
+      retargetDragAtPointer(movedX, movedY);
+  }
+
+  autoScrollRaf = requestAnimationFrame(autoScrollStep);
+}
+
+function retargetDragAtPointer(dx, dy)
+{
+  // Chart moves/resizes are anchored to viewport coordinates; the content
+  // shifted under the stationary pointer, so shift the anchor with it.
+  if (sheetChartDrag)
+  {
+    if (sheetChartDrag.kind === 'move')
+    {
+      sheetChartDrag.origX += dx;
+      sheetChartDrag.origY += dy;
+    }
+    else
+    {
+      sheetChartDrag.origWidth += dx;
+      sheetChartDrag.origHeight += dy;
+    }
+  }
+
+  // Ref-box and chart drags do their work in document mousemove handlers;
+  // feed them a synthetic move at the pointer's (unchanged) position.
+  if (refBoxDrag || sheetChartDrag)
+  {
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: autoScrollMouse.x, clientY: autoScrollMouse.y, button: 0 }));
+    return;
+  }
+
+  // Selection, formula-ref picking, and fill drags track the hovered cell.
+  var cell = sheetCellFromPoint(autoScrollMouse.x, autoScrollMouse.y);
+
+  if (cell && (isDragging || isRefDragging || isFillDragging))
+    cellMouseEnter(colName(cell.col) + cell.row);
+}
+
 function getSelectionBoundingBox()
 {
   var anchor = parseName(selectionAnchor),
@@ -9620,6 +9741,55 @@ function stdevRange(r)
   return Math.sqrt(varianceRange(r));
 }
 
+// A cell's value as an expression literal (numbers bare, TRUE/FALSE bare,
+// text quoted, blanks 0) — the same shape substituteCellRefs produces, so
+// lookup functions can drop their result straight into the formula text.
+function cellExprLiteral(ref)
+{
+  var v = sheetData[ref];
+
+  if (v === undefined || v === '')
+    return '0';
+
+  if (v.startsWith('='))
+    v = evalCell(ref, v);
+
+  var upper = String(v).toUpperCase();
+
+  if (upper === 'TRUE' || upper === 'FALSE')
+    return upper.toLowerCase();
+
+  return isNaN(parseFloat(v)) ? JSON.stringify(v) : v;
+}
+
+function refsBoundingBox(refs)
+{
+  var minRow = Infinity, maxRow = 0, minCol = Infinity, maxCol = 0;
+
+  refs.forEach(function(ref)
+  {
+    var p = parseName(ref);
+    if (!p) return;
+    minRow = Math.min(minRow, p.row); maxRow = Math.max(maxRow, p.row);
+    minCol = Math.min(minCol, colIndex(p.col)); maxCol = Math.max(maxCol, colIndex(p.col));
+  });
+
+  return { minRow: minRow, maxRow: maxRow, minCol: minCol, maxCol: maxCol };
+}
+
+// True when a displayed cell value matches a lookup target — numerically
+// when both sides are numbers, case-insensitive text comparison otherwise.
+function lookupValueMatches(value, target)
+{
+  var targetNum = (typeof target === 'number') ? target : parseFloat(target),
+      targetIsNum = (typeof target === 'number') || (String(target).trim() !== '' && !isNaN(targetNum));
+
+  if (targetIsNum)
+    return value !== '' && parseFloat(value) === targetNum;
+
+  return String(value).toLowerCase() === String(target).toLowerCase();
+}
+
 // INDEX(range, row, [col]) — the value at a position inside a range. For a
 // single-row range the second argument indexes along the row (like Excel's
 // one-dimensional form), otherwise it picks the row and the optional third
@@ -9634,18 +9804,9 @@ function indexRange(argText)
   if (!refs || !refs.length)
     throw new Error('INDEX needs a range');
 
-  var minRow = Infinity, maxRow = 0, minCol = Infinity, maxCol = 0;
-
-  refs.forEach(function(ref)
-  {
-    var p = parseName(ref);
-    if (!p) return;
-    minRow = Math.min(minRow, p.row); maxRow = Math.max(maxRow, p.row);
-    minCol = Math.min(minCol, colIndex(p.col)); maxCol = Math.max(maxCol, colIndex(p.col));
-  });
-
-  var height = maxRow - minRow + 1,
-      width = maxCol - minCol + 1,
+  var box = refsBoundingBox(refs),
+      height = box.maxRow - box.minRow + 1,
+      width = box.maxCol - box.minCol + 1,
       rowNum = args[1] !== undefined ? resolveValue(args[1]) : 1,
       colNum;
 
@@ -9662,21 +9823,181 @@ function indexRange(argText)
   if (rowNum < 1 || rowNum > height || colNum < 1 || colNum > width)
     throw new Error('INDEX out of range');
 
-  var ref = colName(minCol + colNum - 1) + (minRow + rowNum - 1),
-      v = sheetData[ref];
+  return cellExprLiteral(colName(box.minCol + colNum - 1) + (box.minRow + rowNum - 1));
+}
 
-  if (v === undefined || v === '')
-    return '0';
+// VLOOKUP(value, range, colIndex) — finds the first row whose FIRST-column
+// value matches, then returns that row's value from the 1-based colIndex-th
+// column of the range. Exact matching only. HLOOKUP is the same across rows.
+function vlookupRange(argText)
+{
+  var args = splitTopLevelArgs(argText),
+      target = resolveValue(args[0]),
+      refs = argCellRefs(args[1]);
 
-  if (v.startsWith('='))
-    v = evalCell(ref, v);
+  if (!refs || !refs.length || args[2] === undefined)
+    throw new Error('VLOOKUP needs a value, range, and column index');
 
-  var upper = String(v).toUpperCase();
+  var box = refsBoundingBox(refs),
+      colOffset = resolveValue(args[2]) - 1;
 
-  if (upper === 'TRUE' || upper === 'FALSE')
-    return upper.toLowerCase();
+  if (colOffset < 0 || box.minCol + colOffset > box.maxCol)
+    throw new Error('VLOOKUP column index out of range');
 
-  return isNaN(parseFloat(v)) ? JSON.stringify(v) : v;
+  for (var r = box.minRow; r <= box.maxRow; r++)
+    if (lookupValueMatches(getDisplayValue(colName(box.minCol) + r), target))
+      return cellExprLiteral(colName(box.minCol + colOffset) + r);
+
+  return '"#N/A"';
+}
+
+function hlookupRange(argText)
+{
+  var args = splitTopLevelArgs(argText),
+      target = resolveValue(args[0]),
+      refs = argCellRefs(args[1]);
+
+  if (!refs || !refs.length || args[2] === undefined)
+    throw new Error('HLOOKUP needs a value, range, and row index');
+
+  var box = refsBoundingBox(refs),
+      rowOffset = resolveValue(args[2]) - 1;
+
+  if (rowOffset < 0 || box.minRow + rowOffset > box.maxRow)
+    throw new Error('HLOOKUP row index out of range');
+
+  for (var c = box.minCol; c <= box.maxCol; c++)
+    if (lookupValueMatches(getDisplayValue(colName(c) + box.minRow), target))
+      return cellExprLiteral(colName(c) + (box.minRow + rowOffset));
+
+  return '"#N/A"';
+}
+
+// MATCH(value, range) — 1-based position of the first exact match walking
+// the range row-major (use a single row or column range, like in Excel).
+function matchRange(argText)
+{
+  var args = splitTopLevelArgs(argText),
+      target = resolveValue(args[0]),
+      refs = argCellRefs(args[1]);
+
+  if (!refs || !refs.length)
+    throw new Error('MATCH needs a range');
+
+  for (var i = 0; i < refs.length; i++)
+    if (lookupValueMatches(getDisplayValue(refs[i]), target))
+      return i + 1;
+
+  return '"#N/A"';
+}
+
+// Excel-style criterion (">5", "<>0", "apples", 12) → a predicate over a
+// cell's displayed value, shared by COUNTIF / SUMIF / AVERAGEIF.
+function makeCriterionTest(rawArg)
+{
+  var crit = resolveValue(rawArg),
+      s = String(crit),
+      m = s.match(/^(>=|<=|<>|=|>|<)([\s\S]*)$/),
+      op = m ? m[1] : '=',
+      rhs = m ? m[2] : s,
+      rhsNum = parseFloat(rhs),
+      rhsIsNum = rhs.trim() !== '' && !isNaN(rhsNum);
+
+  return function(value)
+  {
+    var num = parseFloat(value),
+        bothNum = rhsIsNum && value !== '' && !isNaN(num);
+
+    switch (op)
+    {
+      case '>':  return bothNum && num > rhsNum;
+      case '<':  return bothNum && num < rhsNum;
+      case '>=': return bothNum && num >= rhsNum;
+      case '<=': return bothNum && num <= rhsNum;
+      case '<>': return bothNum ? num !== rhsNum : String(value).toLowerCase() !== rhs.toLowerCase();
+      default:   return bothNum ? num === rhsNum : String(value).toLowerCase() === rhs.toLowerCase();
+    }
+  };
+}
+
+function countifRange(argText)
+{
+  var args = splitTopLevelArgs(argText),
+      refs = argCellRefs(args[0]);
+
+  if (!refs)
+    throw new Error('COUNTIF needs a range');
+
+  var test = makeCriterionTest(args[1]);
+
+  return refs.filter(function(ref){ return test(getDisplayValue(ref)); }).length;
+}
+
+// SUMIF(range, criterion, [sumRange]): sums sumRange (default: the range
+// itself) wherever the criterion matches the corresponding range cell.
+function sumifRange(argText)
+{
+  var args = splitTopLevelArgs(argText),
+      refs = argCellRefs(args[0]);
+
+  if (!refs)
+    throw new Error('SUMIF needs a range');
+
+  var test = makeCriterionTest(args[1]),
+      sumRefs = args[2] !== undefined ? argCellRefs(args[2]) : refs,
+      total = 0;
+
+  refs.forEach(function(ref, i)
+  {
+    if (test(getDisplayValue(ref)) && sumRefs && sumRefs[i] !== undefined)
+      total += cellNumericValue(sumRefs[i]);
+  });
+
+  return total;
+}
+
+function averageifRange(argText)
+{
+  var args = splitTopLevelArgs(argText),
+      refs = argCellRefs(args[0]);
+
+  if (!refs)
+    throw new Error('AVERAGEIF needs a range');
+
+  var test = makeCriterionTest(args[1]),
+      avgRefs = args[2] !== undefined ? argCellRefs(args[2]) : refs,
+      total = 0,
+      count = 0;
+
+  refs.forEach(function(ref, i)
+  {
+    if (test(getDisplayValue(ref)) && avgRefs && avgRefs[i] !== undefined)
+    {
+      total += cellNumericValue(avgRefs[i]);
+      count++;
+    }
+  });
+
+  if (!count)
+    throw new Error('AVERAGEIF matched nothing');
+
+  return total / count;
+}
+
+// LARGE/SMALL(range, k): the k-th largest/smallest value (1-based).
+function largeSmallRange(argText, wantLargest)
+{
+  var args = splitTopLevelArgs(argText),
+      vals = aggregateArgValues(args[0]).slice().sort
+      (
+        function(a, b) { return wantLargest ? b - a : a - b; }
+      ),
+      k = args[1] !== undefined ? resolveValue(args[1]) : 1;
+
+  if (k < 1 || k > vals.length)
+    throw new Error('k out of range');
+
+  return vals[k - 1];
 }
 
 // Runs every named-function pattern once. Each pattern requires a function
@@ -9700,6 +10021,15 @@ function applyFunctionPass(expr, selfRef)
     .replace(/(?<![A-Za-z])STDEV\(([^()]+)\)/gi, function(_, r) { return stdevRange(r); })
     .replace(/(?<![A-Za-z])VAR\(([^()]+)\)/gi, function(_, r) { return varianceRange(r); })
     .replace(/(?<![A-Za-z])INDEX\(([^()]+)\)/gi, function(_, a) { return indexRange(a); })
+    .replace(/(?<![A-Za-z])VLOOKUP\(([^()]+)\)/gi, function(_, a) { return vlookupRange(a); })
+    .replace(/(?<![A-Za-z])HLOOKUP\(([^()]+)\)/gi, function(_, a) { return hlookupRange(a); })
+    .replace(/(?<![A-Za-z])MATCH\(([^()]+)\)/gi, function(_, a) { return matchRange(a); })
+    .replace(/(?<![A-Za-z])COUNTIF\(([^()]+)\)/gi, function(_, a) { return countifRange(a); })
+    .replace(/(?<![A-Za-z])SUMIF\(([^()]+)\)/gi, function(_, a) { return sumifRange(a); })
+    .replace(/(?<![A-Za-z])AVERAGEIF\(([^()]+)\)/gi, function(_, a) { return averageifRange(a); })
+    .replace(/(?<![A-Za-z])AVERAGE\(([^()]+)\)/gi, function(_, r) { return avgRange(r); })
+    .replace(/(?<![A-Za-z])LARGE\(([^()]+)\)/gi, function(_, a) { return largeSmallRange(a, true); })
+    .replace(/(?<![A-Za-z])SMALL\(([^()]+)\)/gi, function(_, a) { return largeSmallRange(a, false); })
     .replace
     (
       /(?<![A-Za-z])ROW\(([^()]*)\)/gi,
@@ -9723,7 +10053,18 @@ function applyFunctionPass(expr, selfRef)
     .replace(/(?<![A-Za-z])TAN\(([^()]+)\)/gi, function(_, a) { return Math.tan(resolveValue(a)); })
     .replace(/(?<![A-Za-z])ASIN\(([^()]+)\)/gi, function(_, a) { return Math.asin(resolveValue(a)); })
     .replace(/(?<![A-Za-z])ACOS\(([^()]+)\)/gi, function(_, a) { return Math.acos(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])ATAN2\(([^()]+)\)/gi, function(_, a)
+    {
+      // Excel argument order is (x, y); JS atan2 takes (y, x).
+      var args = splitTopLevelArgs(a);
+      return Math.atan2(resolveValue(args[1]), resolveValue(args[0]));
+    })
     .replace(/(?<![A-Za-z])ATAN\(([^()]+)\)/gi, function(_, a) { return Math.atan(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])SINH\(([^()]+)\)/gi, function(_, a) { return Math.sinh(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])COSH\(([^()]+)\)/gi, function(_, a) { return Math.cosh(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])TANH\(([^()]+)\)/gi, function(_, a) { return Math.tanh(resolveValue(a)); })
+    .replace(/(?<![A-Za-z])DEGREES\(([^()]+)\)/gi, function(_, a) { return resolveValue(a) * 180 / Math.PI; })
+    .replace(/(?<![A-Za-z])RADIANS\(([^()]+)\)/gi, function(_, a) { return resolveValue(a) * Math.PI / 180; })
     .replace(/(?<![A-Za-z])ABS\(([^()]+)\)/gi, function(_, a) { return Math.abs(resolveValue(a)); })
     .replace(/(?<![A-Za-z])SQRT\(([^()]+)\)/gi, function(_, a) { return Math.sqrt(resolveValue(a)); })
     .replace(/(?<![A-Za-z])SIGN\(([^()]+)\)/gi, function(_, a) { return Math.sign(resolveValue(a)); })
@@ -9871,6 +10212,106 @@ function applyFunctionPass(expr, selfRef)
     )
     .replace
     (
+      /(?<![A-Za-z])SUBSTITUTE\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var args = splitTopLevelArgs(a),
+            text = String(resolveValue(args[0])),
+            oldText = String(resolveValue(args[1])),
+            newText = String(resolveValue(args[2]));
+
+        if (!oldText)
+          return formatForExpr(text);
+
+        // Optional 4th argument: replace only the n-th occurrence.
+        if (args[3] !== undefined)
+        {
+          var n = resolveValue(args[3]),
+              at = -1;
+
+          for (var i = 0; i < n; i++)
+          {
+            at = text.indexOf(oldText, at + 1);
+            if (at === -1) break;
+          }
+
+          return formatForExpr(at === -1 ? text : text.slice(0, at) + newText + text.slice(at + oldText.length));
+        }
+
+        return formatForExpr(text.split(oldText).join(newText));
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])REPT\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var args = splitTopLevelArgs(a),
+            text = String(resolveValue(args[0])),
+            times = Math.max(0, Math.floor(resolveValue(args[1])));
+
+        return formatForExpr(new Array(times + 1).join(text));
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])FIND\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var args = splitTopLevelArgs(a),
+            needle = String(resolveValue(args[0])),
+            hay = String(resolveValue(args[1])),
+            start = args[2] !== undefined ? resolveValue(args[2]) : 1,
+            at = hay.indexOf(needle, start - 1);
+
+        if (at === -1)
+          throw new Error('FIND: not found');
+
+        return at + 1;
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])SEARCH\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var args = splitTopLevelArgs(a),
+            needle = String(resolveValue(args[0])).toLowerCase(),
+            hay = String(resolveValue(args[1])).toLowerCase(),
+            start = args[2] !== undefined ? resolveValue(args[2]) : 1,
+            at = hay.indexOf(needle, start - 1);
+
+        if (at === -1)
+          throw new Error('SEARCH: not found');
+
+        return at + 1;
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])PROPER\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var text = String(resolveValue(a)).replace
+        (
+          /[A-Za-z]+/g,
+          function(word) { return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(); }
+        );
+
+        return formatForExpr(text);
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])EXACT\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var args = splitTopLevelArgs(a);
+        return String(resolveValue(args[0])) === String(resolveValue(args[1]));
+      }
+    )
+    .replace
+    (
       /(?<![A-Za-z])IFERROR\(([^()]+)\)/gi,
       function(_, a)
       {
@@ -9919,6 +10360,78 @@ function applyFunctionPass(expr, selfRef)
       }
     )
     .replace(/(?<![A-Za-z])NOT\(([^()]+)\)/gi, function(_, a) { return !resolveValue(a); })
+    .replace
+    (
+      /(?<![A-Za-z])XOR\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        return splitTopLevelArgs(a).filter(function(x) { return !!resolveValue(x); }).length % 2 === 1;
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])ROUNDUP\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var args = splitTopLevelArgs(a),
+            num = resolveValue(args[0]),
+            digits = args[1] !== undefined ? resolveValue(args[1]) : 0,
+            factor = Math.pow(10, digits);
+
+        // Away from zero, like Excel.
+        return Math.sign(num) * Math.ceil(Math.abs(num) * factor) / factor;
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])ROUNDDOWN\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var args = splitTopLevelArgs(a),
+            num = resolveValue(args[0]),
+            digits = args[1] !== undefined ? resolveValue(args[1]) : 0,
+            factor = Math.pow(10, digits);
+
+        // Toward zero, like Excel.
+        return Math.sign(num) * Math.floor(Math.abs(num) * factor) / factor;
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])FACT\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var n = Math.floor(resolveValue(a));
+
+        if (n < 0)
+          throw new Error('FACT of a negative number');
+
+        var result = 1;
+        for (var i = 2; i <= n; i++)
+          result *= i;
+
+        return result;
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])EVEN\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var num = resolveValue(a);
+        return Math.sign(num) * Math.ceil(Math.abs(num) / 2) * 2;
+      }
+    )
+    .replace
+    (
+      /(?<![A-Za-z])ODD\(([^()]+)\)/gi,
+      function(_, a)
+      {
+        var num = resolveValue(a);
+        if (!num) return 1;
+        return Math.sign(num) * (2 * Math.ceil((Math.abs(num) + 1) / 2) - 1);
+      }
+    )
     .replace
     (
       /(?<![A-Za-z])ROUND\(([^()]+)\)/gi,
@@ -11359,7 +11872,13 @@ var SHEET_FUNCTION_GROUPS =
     [
       { name: 'SUM(range)', desc: 'Adds all numbers in a range.', example: '=SUM(A1:A4)' },
       { name: 'AVG(range)', desc: 'Averages the numbers in a range.', example: '=AVG(A1:A4)' },
+      { name: 'AVERAGE(range)', desc: 'Same as AVG.', example: '=AVERAGE(A1:A4)' },
       { name: 'MEAN(range)', desc: 'Same as AVG.', example: '=MEAN(A1:A4)' },
+      { name: 'COUNTIF(range, criterion)', desc: 'Counts cells matching a criterion like ">5" or "text".', example: '=COUNTIF(A1:A9, ">5")' },
+      { name: 'SUMIF(range, criterion, [sum_range])', desc: 'Sums the cells (or sum_range) where the criterion matches.', example: '=SUMIF(A1:A9, ">5", B1:B9)' },
+      { name: 'AVERAGEIF(range, criterion, [avg_range])', desc: 'Averages the cells where the criterion matches.', example: '=AVERAGEIF(A1:A9, "<>0")' },
+      { name: 'LARGE(range, k)', desc: 'The k-th largest value in a range.', example: '=LARGE(A1:A9, 2)' },
+      { name: 'SMALL(range, k)', desc: 'The k-th smallest value in a range.', example: '=SMALL(A1:A9, 2)' },
       { name: 'MEDIAN(range)', desc: 'Middle value of a range.', example: '=MEDIAN(A1:A4)' },
       { name: 'PRODUCT(range)', desc: 'Multiplies all numbers in a range.', example: '=PRODUCT(A1:A4)' },
       { name: 'MAX(range)', desc: 'Largest value in a range.', example: '=MAX(A1:A4)' },
@@ -11377,6 +11896,8 @@ var SHEET_FUNCTION_GROUPS =
     [
       { name: 'ABS(value)', desc: 'Absolute value of a number, cell, or expression.', example: '=ABS(A1-A2)' },
       { name: 'ROUND(value, decimals)', desc: 'Rounds to a number of decimal places.', example: '=ROUND(A1, 2)' },
+      { name: 'ROUNDUP(value, [digits])', desc: 'Rounds away from zero.', example: '=ROUNDUP(A1, 1)' },
+      { name: 'ROUNDDOWN(value, [digits])', desc: 'Rounds toward zero.', example: '=ROUNDDOWN(A1, 1)' },
       { name: 'TRUNC(value, [decimals])', desc: 'Truncates toward zero without rounding.', example: '=TRUNC(A1, 1)' },
       { name: 'INT(value)', desc: 'Rounds down to the nearest integer.', example: '=INT(A1)' },
       { name: 'CEILING(value, [significance])', desc: 'Rounds up to the nearest multiple.', example: '=CEILING(A1, 5)' },
@@ -11391,7 +11912,10 @@ var SHEET_FUNCTION_GROUPS =
       { name: 'LOG10(value)', desc: 'Base-10 logarithm.', example: '=LOG10(A1)' },
       { name: 'PI()', desc: 'The value of pi.', example: '=PI()' },
       { name: 'RAND()', desc: 'Random number between 0 and 1.', example: '=RAND()' },
-      { name: 'RANDBETWEEN(min, max)', desc: 'Random integer between two values.', example: '=RANDBETWEEN(1, 6)' }
+      { name: 'RANDBETWEEN(min, max)', desc: 'Random integer between two values.', example: '=RANDBETWEEN(1, 6)' },
+      { name: 'FACT(n)', desc: 'Factorial of a number.', example: '=FACT(5)' },
+      { name: 'EVEN(value)', desc: 'Rounds up (away from zero) to the nearest even integer.', example: '=EVEN(A1)' },
+      { name: 'ODD(value)', desc: 'Rounds up (away from zero) to the nearest odd integer.', example: '=ODD(A1)' }
     ]
   },
   {
@@ -11403,7 +11927,13 @@ var SHEET_FUNCTION_GROUPS =
       { name: 'TAN(angle)', desc: 'Tangent of an angle in radians.', example: '=TAN(A1)' },
       { name: 'ASIN(value)', desc: 'Inverse sine, in radians.', example: '=ASIN(A1)' },
       { name: 'ACOS(value)', desc: 'Inverse cosine, in radians.', example: '=ACOS(A1)' },
-      { name: 'ATAN(value)', desc: 'Inverse tangent, in radians.', example: '=ATAN(A1)' }
+      { name: 'ATAN(value)', desc: 'Inverse tangent, in radians.', example: '=ATAN(A1)' },
+      { name: 'ATAN2(x, y)', desc: 'Angle of the point (x, y), in radians.', example: '=ATAN2(1, 1)' },
+      { name: 'SINH(value)', desc: 'Hyperbolic sine.', example: '=SINH(A1)' },
+      { name: 'COSH(value)', desc: 'Hyperbolic cosine.', example: '=COSH(A1)' },
+      { name: 'TANH(value)', desc: 'Hyperbolic tangent.', example: '=TANH(A1)' },
+      { name: 'DEGREES(radians)', desc: 'Converts radians to degrees.', example: '=DEGREES(PI())' },
+      { name: 'RADIANS(degrees)', desc: 'Converts degrees to radians.', example: '=RADIANS(180)' }
     ]
   },
   {
@@ -11411,6 +11941,9 @@ var SHEET_FUNCTION_GROUPS =
     functions:
     [
       { name: 'INDEX(range, row, [col])', desc: 'Value at a position inside a range (1-based).', example: '=INDEX(A1:B10, 3, 2)' },
+      { name: 'VLOOKUP(value, range, col)', desc: 'Finds value in the range\'s first column, returns the col-th column of that row.', example: '=VLOOKUP("Bob", A1:C9, 3)' },
+      { name: 'HLOOKUP(value, range, row)', desc: 'Finds value in the range\'s first row, returns the row-th row of that column.', example: '=HLOOKUP("Q2", A1:F3, 2)' },
+      { name: 'MATCH(value, range)', desc: 'Position of the first exact match in a row or column range (1-based).', example: '=MATCH(42, A1:A9)' },
       { name: 'ROW([ref])', desc: 'Row number of a reference, or of the formula\'s own cell.', example: '=ROW(B7)' },
       { name: 'COLUMN([ref])', desc: 'Column number of a reference, or of the formula\'s own cell.', example: '=COLUMN(B7)' }
     ]
@@ -11427,7 +11960,13 @@ var SHEET_FUNCTION_GROUPS =
       { name: 'TRIM(text)', desc: 'Removes leading/trailing whitespace.', example: '=TRIM(A1)' },
       { name: 'LEFT(text, [count])', desc: 'First N characters of the text.', example: '=LEFT(A1, 3)' },
       { name: 'RIGHT(text, [count])', desc: 'Last N characters of the text.', example: '=RIGHT(A1, 3)' },
-      { name: 'MID(text, start, count)', desc: 'A substring starting at a given position.', example: '=MID(A1, 2, 3)' }
+      { name: 'MID(text, start, count)', desc: 'A substring starting at a given position.', example: '=MID(A1, 2, 3)' },
+      { name: 'SUBSTITUTE(text, old, new, [n])', desc: 'Replaces occurrences of old with new (all, or only the n-th).', example: '=SUBSTITUTE(A1, "cat", "dog")' },
+      { name: 'REPT(text, times)', desc: 'Repeats text a number of times.', example: '=REPT("-", 10)' },
+      { name: 'FIND(needle, text, [start])', desc: 'Position of needle in text (case-sensitive, 1-based).', example: '=FIND("a", A1)' },
+      { name: 'SEARCH(needle, text, [start])', desc: 'Like FIND, but case-insensitive.', example: '=SEARCH("a", A1)' },
+      { name: 'PROPER(text)', desc: 'Capitalizes the first letter of each word.', example: '=PROPER(A1)' },
+      { name: 'EXACT(text1, text2)', desc: 'TRUE if two texts are identical (case-sensitive).', example: '=EXACT(A1, B1)' }
     ]
   },
   {
@@ -11438,6 +11977,7 @@ var SHEET_FUNCTION_GROUPS =
       { name: 'AND(cond1, cond2, ...)', desc: 'True if every condition is true.', example: '=AND(A1>0, A2>0)' },
       { name: 'OR(cond1, cond2, ...)', desc: 'True if any condition is true.', example: '=OR(A1>0, A2>0)' },
       { name: 'NOT(condition)', desc: 'Reverses a true/false value.', example: '=NOT(A1>5)' },
+      { name: 'XOR(cond1, cond2, ...)', desc: 'True if an odd number of conditions are true.', example: '=XOR(A1>0, A2>0)' },
       { name: 'IFERROR(value, fallback)', desc: 'Returns a fallback if value errors out.', example: '=IFERROR(A1/A2, 0)' }
     ]
   }

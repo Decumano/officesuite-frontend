@@ -944,10 +944,13 @@ html, body
 {
   cursor: pointer;
 }
-/* Header cells covering the current selection. */
+/* Header cells covering the current selection. The tint is painted over the
+   opaque header base color — headers are sticky and float above the grid, so
+   a translucent background would let cells show through. */
 #sheet-grid th.hl
 {
-  background: var(--accent-dim);
+  background-color: var(--bg2);
+  background-image: linear-gradient(var(--accent-dim), var(--accent-dim));
   color: var(--text1);
 }
 #sheet-grid th:first-child
