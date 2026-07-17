@@ -8662,7 +8662,11 @@ function autoScrollStep()
       retargetDragAtPointer(movedX, movedY);
   }
 
-  autoScrollRaf = requestAnimationFrame(autoScrollStep);
+  // The retarget above can dispatch a synthetic mousemove, whose listener
+  // already scheduled the next step — guard so each frame runs this once,
+  // not an ever-doubling number of times.
+  if (!autoScrollRaf)
+    autoScrollRaf = requestAnimationFrame(autoScrollStep);
 }
 
 function retargetDragAtPointer(dx, dy)
@@ -10447,7 +10451,9 @@ function applyFunctionPass(expr, selfRef)
 }
 
 // Evaluates a cell that lives on another tab: the whole formula engine reads
-// the global sheetData, so swap the alias for the duration of the call.
+// the global sheetData, so swap the alias for the duration of the call. The
+// eval cache is keyed by bare refs, so it must not survive the swap in
+// either direction.
 function evalCellOnPage(page, ref, val)
 {
   if (page.data === sheetData)
@@ -10455,8 +10461,9 @@ function evalCellOnPage(page, ref, val)
 
   var saved = sheetData;
   sheetData = page.data;
+  clearEvalCache();
   try { return evalCell(ref, val); }
-  finally { sheetData = saved; }
+  finally { sheetData = saved; clearEvalCache(); }
 }
 
 // Cross-tab references use the link-like syntax [Tab name](A1). Resolved
@@ -10497,6 +10504,19 @@ function substitutePageRefs(exprText)
 // itself resolves the cycle as 0 instead of recursing forever.
 var evalCellInProgress = {};
 
+// Memoized formula results. Within one recalculation pass the same cell gets
+// evaluated over and over (every range that covers it re-reads it, the save
+// serializer evaluates it again, charts again) — without a cache, a sheet of
+// chained or whole-column formulas recalculates quadratically on every
+// keystroke. Cleared at the start of each pass and whenever the sheetData
+// alias switches pages, so entries can never outlive the data they came from.
+var evalCellCache = {};
+
+function clearEvalCache()
+{
+  evalCellCache = {};
+}
+
 function evalCell(ref, val)
 {
   if (!val || !val.startsWith('='))
@@ -10505,7 +10525,13 @@ function evalCell(ref, val)
   if (evalCellInProgress[ref])
     return '0';
 
+  var cached = evalCellCache[ref];
+  if (cached && cached.val === val)
+    return cached.result;
+
   evalCellInProgress[ref] = true;
+
+  var out;
 
   try
   {
@@ -10532,29 +10558,35 @@ function evalCell(ref, val)
     var result = Function('"use strict"; return (' + expr + ')')();
 
     if (typeof result === 'boolean')
-      return result ? 'TRUE' : 'FALSE';
-
-    if (typeof result === 'string')
-      return result;
-
-    return  (isNaN(result) || !isFinite(result))
-            ?
-              '#ERR'
-            :
-              parseFloat(result.toFixed(10)).toString();
+      out = result ? 'TRUE' : 'FALSE';
+    else if (typeof result === 'string')
+      out = result;
+    else
+      out =  (isNaN(result) || !isFinite(result))
+             ?
+               '#ERR'
+             :
+               parseFloat(result.toFixed(10)).toString();
   }
   catch(e)
   {
-    return '#ERR';
+    out = '#ERR';
   }
   finally
   {
     delete evalCellInProgress[ref];
   }
+
+  evalCellCache[ref] = { val: val, result: out };
+
+  return out;
 }
 
 function evaluateFormulas(skipRef)
 {
+  // Fresh pass: anything might have changed since the last one.
+  clearEvalCache();
+
   Object.keys(sheetData).forEach
   (
     function(ref)
@@ -10663,6 +10695,7 @@ function aliasActiveSheetPage()
   sheetColors = page.colors;
   sheetTextColors = page.textColors;
   sheetMerges = page.merges;
+  clearEvalCache();
 }
 
 function switchSheetPage(i)
@@ -10890,6 +10923,8 @@ function loadSheetFile(f)
 
 function refreshAllCellDisplays()
 {
+  clearEvalCache();
+
   for (var i = 1; i <= ROWS; i++)
     for (var j = 0; j < COLS; j++)
     {
@@ -11208,6 +11243,38 @@ function sheetRedo()
   sheetRestoreSnapshot(sheetRedoStack, sheetUndoStack);
 }
 
+// Serializing + persisting on every step of a drag (ref-box moves, fill
+// drags, chart drags all save as they go) is wasted work: mark the sheet
+// dirty instead and let the post-drag flush below write once.
+var sheetSaveDeferred = false;
+
+// Persisting (disk/network write, backlink scan, sidebar re-render) is also
+// too heavy to run per keystroke — files[..].content is always updated
+// synchronously, only the persist itself trails behind.
+var sheetPersistTimer = null;
+var sheetPersistId = null;
+
+function scheduleSheetPersist(id)
+{
+  sheetPersistId = id;
+  clearTimeout(sheetPersistTimer);
+  sheetPersistTimer = setTimeout(function()
+  {
+    sheetPersistTimer = null;
+    persistFileEntry(id);
+  }, 400);
+}
+
+window.addEventListener('beforeunload', function()
+{
+  if (sheetPersistTimer)
+  {
+    clearTimeout(sheetPersistTimer);
+    sheetPersistTimer = null;
+    persistFileEntry(sheetPersistId);
+  }
+});
+
 function saveSheetToFile()
 {
   // The grid is always live even when no spreadsheet is open, so without the
@@ -11215,6 +11282,12 @@ function saveSheetToFile()
   // happens to be current (e.g. the document opened before switching tabs).
   if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'sheet')
     return;
+
+  if (sheetDragActive())
+  {
+    sheetSaveDeferred = true;
+    return;
+  }
 
   var out = '---\ntype: spreadsheet\n---\n\n';
 
@@ -11236,6 +11309,12 @@ function saveSheetToFile()
     Object.keys(textColors).forEach(function(ref){ if (textColors[ref]) cellKeys[ref] = true; });
     Object.keys(merges).forEach(function(ref){ if (merges[ref] && merges[ref].length) cellKeys[ref] = true; });
 
+    // Alias the page in once for the whole loop (rather than per formula via
+    // evalCellOnPage) so the eval cache holds across its cells.
+    var savedData = sheetData;
+    sheetData = page.data;
+    if (savedData !== page.data) clearEvalCache();
+
     Object.keys(cellKeys)
       .map(function(ref){ return { ref: ref, at: parseName(ref) }; })
       .filter(function(c){ return !!c.at; })
@@ -11244,13 +11323,16 @@ function saveSheetToFile()
       {
         var val = page.data[c.ref] || '';
         var cellLine = val.startsWith('=')
-                       ? c.ref + '=' + val.slice(1) + '=' + evalCellOnPage(page, c.ref, val)
+                       ? c.ref + '=' + val.slice(1) + '=' + evalCell(c.ref, val)
                        : c.ref + '=' + val;
         if (merges[c.ref] && merges[c.ref].length) cellLine += ':' + merges[c.ref].join(',');
         if (colors[c.ref]) cellLine += ';' + colors[c.ref];
         if (textColors[c.ref]) cellLine += ';txt' + textColors[c.ref];
         out += cellLine + '\n';
       });
+
+    sheetData = savedData;
+    if (savedData !== page.data) clearEvalCache();
   });
 
   if (sheetCharts.length)
@@ -11259,7 +11341,7 @@ function saveSheetToFile()
   files[currentFileId].content = out;
   files[currentFileId].modified = Date.now();
 
-  persistFileEntry(currentFileId);
+  scheduleSheetPersist(currentFileId);
 }
 
 // ── SHEET CHARTS (Chart.js) ──
@@ -11859,6 +11941,21 @@ document.addEventListener
       return;
 
     sheetChartDrag = null;
+    saveSheetToFile();
+  }
+);
+
+// Deferred-save flush. Registered after every drag's own mouseup handler, so
+// by the time it runs the drag flags are cleared and the save goes through.
+document.addEventListener
+(
+  'mouseup',
+  function()
+  {
+    if (!sheetSaveDeferred || sheetDragActive())
+      return;
+
+    sheetSaveDeferred = false;
     saveSheetToFile();
   }
 );
