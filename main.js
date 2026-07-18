@@ -9431,7 +9431,36 @@ function splitTopLevelArgs(text)
 // expression string and safely re-evaluated (strings need quoting).
 function formatForExpr(value)
 {
-  return (typeof value === 'string') ? JSON.stringify(value) : String(value);
+  if (typeof value === 'string')
+    return JSON.stringify(value);
+
+  // A negative number spliced right after a '-' would read as the JS "--"
+  // operator ("A1-(-2)" collapsing to "A1--2" is a SyntaxError); keep it
+  // parenthesized so it always reads as a value.
+  if (typeof value === 'number' && value < 0)
+    return '(' + value + ')';
+
+  return String(value);
+}
+
+// Final safety net before handing assembled text to the JS evaluator: the
+// formula is built by splicing computed values into a string, so JS-only
+// token traps need defusing. Runs of '-' are spaced apart (every '-' past
+// the first is a unary negation — "5--3" means 5-(-3), not a decrement),
+// and Excel's '^' power operator becomes JS's '**'. Quoted strings pass
+// through untouched.
+function sanitizeExprForEval(expr)
+{
+  return expr.replace
+  (
+    /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-{2,}|\^/g,
+    function(m)
+    {
+      if (m === '^') return '**';
+      if (m[0] === '-') return m.split('').join(' ');
+      return m;
+    }
+  );
 }
 
 // Replaces cell references with literals usable in a JS expression: numeric
@@ -9458,7 +9487,14 @@ function substituteCellRefs(exprText)
       if (upper === 'TRUE' || upper === 'FALSE')
         return upper.toLowerCase();
 
-      return isNaN(parseFloat(v)) ? JSON.stringify(v) : v;
+      var num = parseFloat(v);
+
+      if (isNaN(num))
+        return JSON.stringify(v);
+
+      // Parenthesize negatives so "A1-B1" with a negative B1 doesn't
+      // collapse into the JS "--" operator.
+      return num < 0 ? '(' + v + ')' : v;
     }
   );
 }
@@ -9468,7 +9504,7 @@ function substituteCellRefs(exprText)
 // functions such as ABS/ROUND/SQRT/IF/etc.
 function resolveValue(exprText)
 {
-  return Function('"use strict"; return (' + substituteCellRefs(exprText) + ')')();
+  return Function('"use strict"; return (' + sanitizeExprForEval(substituteCellRefs(exprText)) + ')')();
 }
 
 // Resolves innermost parenthesis groups that are NOT function calls (the
@@ -9763,7 +9799,14 @@ function cellExprLiteral(ref)
   if (upper === 'TRUE' || upper === 'FALSE')
     return upper.toLowerCase();
 
-  return isNaN(parseFloat(v)) ? JSON.stringify(v) : v;
+  var num = parseFloat(v);
+
+  if (isNaN(num))
+    return JSON.stringify(v);
+
+  // Parenthesize negatives so "A1-B1" with a negative B1 doesn't collapse
+  // into the JS "--" operator.
+  return num < 0 ? '(' + v + ')' : v;
 }
 
 function refsBoundingBox(refs)
@@ -10494,7 +10537,14 @@ function substitutePageRefs(exprText)
       if (upper === 'TRUE' || upper === 'FALSE')
         return upper.toLowerCase();
 
-      return isNaN(parseFloat(v)) ? JSON.stringify(v) : v;
+      var num = parseFloat(v);
+
+      if (isNaN(num))
+        return JSON.stringify(v);
+
+      // Parenthesize negatives so "A1-B1" with a negative B1 doesn't
+      // collapse into the JS "--" operator.
+      return num < 0 ? '(' + v + ')' : v;
     }
   );
 }
@@ -10553,7 +10603,7 @@ function evalCell(ref, val)
     }
     while (expr !== previous && --iterations > 0);
 
-    expr = substituteCellRefs(expr);
+    expr = sanitizeExprForEval(substituteCellRefs(expr));
 
     var result = Function('"use strict"; return (' + expr + ')')();
 
@@ -11463,20 +11513,33 @@ function categoricalByColumnSeries(grid, firstRow, firstCol)
   return { labels: labels, datasets: datasets };
 }
 
+// The effective orientation of a chart: an explicit choice wins; 'auto'
+// matches Excel/Sheets' default — a range with more data rows than data
+// columns (e.g. a simple Month/Revenue list) charts each COLUMN as a series,
+// otherwise (e.g. a wide Quarter-by-Product table) each ROW is a series.
+function chartEffectiveOrientation(chartDef, grid)
+{
+  if (chartDef.orientation === 'rows' || chartDef.orientation === 'cols')
+    return chartDef.orientation;
+
+  var dataRowCount = grid.length - (chartDef.firstRowLabels ? 1 : 0),
+      dataColCount = grid[0].length - (chartDef.firstColSeries ? 1 : 0);
+
+  return (dataRowCount > dataColCount) ? 'cols' : 'rows';
+}
+
 function buildCategoricalChartData(chartDef, grid)
 {
   if (!grid.length || !grid[0].length)
     return { labels: [], datasets: [] };
 
   var firstRow = chartDef.firstRowLabels,
-      firstCol = chartDef.firstColSeries,
-      dataRowCount = grid.length - (firstRow ? 1 : 0),
-      dataColCount = grid[0].length - (firstCol ? 1 : 0);
+      firstCol = chartDef.firstColSeries;
 
-  // Matches Excel/Sheets' own default: a range with more data rows than data
-  // columns (e.g. a simple Month/Revenue list) charts each row as a category:
-  // otherwise (e.g. a Quarter-by-Product table) each column is a category.
-  return  (dataRowCount > dataColCount)
+  // 'rows': each row is a series (legend from the first column, axis labels
+  // from the first row). 'cols': each column is a series (legend from the
+  // first row, axis labels from the first column).
+  return  chartEffectiveOrientation(chartDef, grid) === 'cols'
           ?
             categoricalByColumnSeries(grid, firstRow, firstCol)
           :
@@ -11696,9 +11759,15 @@ function renderSheetCharts()
     box.style.width = chartDef.width + 'px';
     box.style.height = chartDef.height + 'px';
 
+    var swapBtn = chartDef.type === 'scatter' ? '' :
+        '<span class="sheet-chart-del" title="Swap legend and axis (rows ↔ columns)" onmousedown="event.stopPropagation()" onclick="toggleChartOrientation(event,\'' + chartDef.id + '\')">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17,3 21,7 17,11"/><line x1="21" y1="7" x2="9" y2="7"/><polyline points="7,13 3,17 7,21"/><line x1="3" y1="17" x2="15" y2="17"/></svg>' +
+        '</span>';
+
     box.innerHTML =
       '<div class="sheet-chart-header" onmousedown="chartBoxMouseDown(event,\'' + chartDef.id + '\')">' +
         '<span class="sheet-chart-title">' + escHtml(chartDef.title || 'Chart') + '</span>' +
+        swapBtn +
         '<span class="sheet-chart-del" onmousedown="event.stopPropagation()" onclick="deleteChart(event,\'' + chartDef.id + '\')">' +
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
         '</span>' +
@@ -11760,6 +11829,7 @@ function openChartModal()
   document.getElementById('chart-percent-total').style.display = 'none';
   document.getElementById('chart-first-row-labels').checked = true;
   document.getElementById('chart-first-col-series').checked = true;
+  document.getElementById('chart-orientation').value = 'auto';
 
   document.getElementById('chart-modal').classList.add('open');
 }
@@ -11819,6 +11889,7 @@ function createChart()
       percentTotal: (newChartType === 'percent' && !isNaN(percentTotal) && percentTotal > 0) ? percentTotal : null,
       firstRowLabels: document.getElementById('chart-first-row-labels').checked,
       firstColSeries: document.getElementById('chart-first-col-series').checked,
+      orientation: document.getElementById('chart-orientation').value,
       x: 40 + offset,
       y: 40 + offset,
       width: 420,
@@ -11827,6 +11898,28 @@ function createChart()
   );
 
   closeChartModal();
+  renderSheetCharts();
+  saveSheetToFile();
+}
+
+// Flips which table direction a chart uses as its legend (Excel's "Switch
+// Row/Column"). An 'auto' chart resolves to what it's currently showing
+// first, so the click always visibly flips it.
+function toggleChartOrientation(e, chartId)
+{
+  e.stopPropagation();
+
+  var chartDef = sheetCharts.find(function(c){ return c.id === chartId; });
+  if (!chartDef)
+    return;
+
+  var grid = getChartRangeGrid(chartDef.range);
+  if (!grid || !grid.length || !grid[0].length)
+    return;
+
+  sheetSnapshotForUndo();
+  chartDef.orientation = chartEffectiveOrientation(chartDef, grid) === 'rows' ? 'cols' : 'rows';
+
   renderSheetCharts();
   saveSheetToFile();
 }
@@ -12001,7 +12094,7 @@ var SHEET_FUNCTION_GROUPS =
       { name: 'FLOOR(value, [significance])', desc: 'Rounds down to the nearest multiple.', example: '=FLOOR(A1, 5)' },
       { name: 'SIGN(value)', desc: 'Returns -1, 0, or 1 depending on the sign.', example: '=SIGN(A1)' },
       { name: 'SQRT(value)', desc: 'Square root of a number, cell, or expression.', example: '=SQRT(A1)' },
-      { name: 'POWER(base, exponent)', desc: 'Raises a number to a power.', example: '=POWER(A1, 2)' },
+      { name: 'POWER(base, exponent)', desc: 'Raises a number to a power (the ^ operator works too).', example: '=POWER(A1, 2)' },
       { name: 'MOD(number, divisor)', desc: 'Remainder after division.', example: '=MOD(A1, 3)' },
       { name: 'EXP(value)', desc: 'e raised to the given power.', example: '=EXP(A1)' },
       { name: 'LN(value)', desc: 'Natural logarithm.', example: '=LN(A1)' },

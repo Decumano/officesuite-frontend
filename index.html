@@ -694,6 +694,11 @@
         <input type="checkbox" id="chart-first-col-series" checked>
         First column is series names
       </label>
+      <select class="modal-input" id="chart-orientation" title="Which direction of the table becomes the legend">
+        <option value="auto">Legend &amp; axis: auto (decide by table shape)</option>
+        <option value="rows">Rows are series — legend from first column, axis from first row</option>
+        <option value="cols">Columns are series — legend from first row, axis from first column</option>
+      </select>
       <div class="modal-actions">
         <button class="btn-cancel" onclick="closeChartModal()">Cancel</button>
         <button class="btn-create" onclick="createChart()">Create</button>
