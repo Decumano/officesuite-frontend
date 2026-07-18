@@ -2680,6 +2680,28 @@ mark.gs-hl
   margin-right: 6px;
   color: var(--text3);
 }
+/* Multi-line form ({ and } on their own lines): the same card, but laid out
+   as a small vertical table — one "key  value" row per field. */
+.doc-fields.doc-fields-vertical
+{
+  display: inline-grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 16px;
+  row-gap: 5px;
+  align-items: baseline;
+}
+.doc-fields-vertical .doc-field-key
+{
+  font-size: 12px;
+  color: var(--text1);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.doc-fields-vertical .doc-field-value
+{
+  font-size: 12px;
+  color: var(--text2);
+}
 
 /* ── NEW FILE MODAL: doc templates ── */
 .doc-template-row
