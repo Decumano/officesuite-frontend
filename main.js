@@ -3720,38 +3720,77 @@ function configureMarkedExtensions()
           }
         },
         {
-          // Doc metadata fields: a line starting with { and containing key: value pairs.
-          // Rendered as a styled card. Example: {type: Character, status: Active}
+          // Doc metadata fields: key: value pairs in braces, rendered as a
+          // styled card. One line — {type: Character, status: Active} — lays
+          // the fields out side by side; putting the braces on their own
+          // lines with one "key: value," per line renders the same card
+          // vertically, one field per row.
           name: 'docFields',
           level: 'block',
           start: function(src)
           {
-            var m = /^\{[^{}\n]+\}/m.exec(src);
+            var m = /^\{/m.exec(src);
             return m ? m.index : undefined;
           },
           tokenizer: function(src)
           {
+            // Single-line form: everything inside one pair of braces.
             var match = /^\{([^{}\n]+)\}[ \t]*(?:\n|$)/.exec(src);
+            if (match)
+            {
+              var pairs = [];
+              match[1].split(',').forEach(function(part)
+              {
+                var colon = part.indexOf(':');
+                if (colon > -1)
+                {
+                  var key = part.slice(0, colon).trim(),
+                      val = part.slice(colon + 1).trim();
+                  if (key) pairs.push({ key: key, value: val });
+                }
+              });
+
+              if (!pairs.length) return undefined;
+
+              return { type: 'docFields', raw: match[0], pairs: pairs, vertical: false };
+            }
+
+            // Multi-line form: '{' alone on its line, one pair per line, '}'
+            // alone on its line. Every non-empty inner line must look like
+            // "key: value" (trailing comma optional) — anything else is left
+            // for other tokenizers, so stray braced text stays untouched.
+            match = /^\{[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*\}[ \t]*(?:\r?\n|$)/.exec(src);
             if (!match) return undefined;
 
-            var pairs = [];
-            match[1].split(',').forEach(function(part)
+            var vPairs = [], valid = true;
+
+            match[1].split('\n').forEach(function(line)
             {
-              var colon = part.indexOf(':');
-              if (colon > -1)
-              {
-                var key = part.slice(0, colon).trim(),
-                    val = part.slice(colon + 1).trim();
-                if (key) pairs.push({ key: key, value: val });
-              }
+              var text = line.trim().replace(/,+$/, '');
+              if (!text) return;
+
+              var colon = text.indexOf(':');
+              if (colon < 1) { valid = false; return; }
+
+              vPairs.push({ key: text.slice(0, colon).trim(), value: text.slice(colon + 1).trim() });
             });
 
-            if (!pairs.length) return undefined;
+            if (!valid || !vPairs.length) return undefined;
 
-            return { type: 'docFields', raw: match[0], pairs: pairs };
+            return { type: 'docFields', raw: match[0], pairs: vPairs, vertical: true };
           },
           renderer: function(token)
           {
+            if (token.vertical)
+            {
+              return '<div class="doc-fields doc-fields-vertical">' +
+                     token.pairs.map(function(p)
+                     {
+                       return '<b class="doc-field-key">' + escHtml(p.key) + '</b><span class="doc-field-value">' + escHtml(p.value) + '</span>';
+                     }).join('') +
+                     '</div>\n';
+            }
+
             return '<div class="doc-fields">' +
                    token.pairs.map(function(p)
                    {
