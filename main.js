@@ -230,6 +230,7 @@ async function init()
   {
     await loadWorkFolderTree();
     await loadBacklinksIndex();
+    loadOpenTabs();
     injectCustomFontsStyle(); // fire-and-forget: doesn't block first paint
     if (linkToken) await initLinkAccess(linkToken);
     return;
@@ -237,6 +238,7 @@ async function init()
 
   loadFromStorage();
   await loadBacklinksIndex();
+  loadOpenTabs();
   renderFileList();
 
   if (Object.keys(files).length === 0 && !linkToken)
@@ -309,7 +311,7 @@ var DOC_TEMPLATES =
   region:    '{type: Region, climate: Unknown, culture: Unknown, status: Active, ruler: Unknown}\n\n#region\n\n## Overview\n\n## Climate & Geography\n\n## Culture & Society\n\n## Political Status\n\n## Key NPCs\n\n## Linked Events\n\n## Notes\n'
 };
 
-function defaultContentForType(type)
+function defaultContentForType(type, name)
 {
   if (type === 'sheet')
     return '---\ntype: spreadsheet\n---\n\n';
@@ -320,12 +322,15 @@ function defaultContentForType(type)
   if (type === 'notebook')
     return serializeNotebookData(defaultNotebookData());
 
+  // The JSON-backed apps embed a display title; seed it with the name the
+  // user gave the file so the first save doesn't rename the file to a
+  // canned default.
   if (type === 'glossary')
-    return JSON.stringify({ name: 'My Glossary', entries: [], roots: [] }, null, 2);
+    return JSON.stringify({ name: name || 'My Glossary', entries: [], roots: [] }, null, 2);
 
   if (type === 'calendar')
     return JSON.stringify({
-      name: 'My Calendar',
+      name: name || 'My Calendar',
       daysPerYear: 365,
       epochFictionYear: 1,
       epochRealDate: new Date().toISOString().slice(0, 10),
@@ -340,10 +345,10 @@ function defaultContentForType(type)
     }, null, 2);
 
   if (type === 'economy')
-    return JSON.stringify({ name: 'Economy Notes', currencies: [], exchangeRates: [], tradeGoods: [], regions: [] }, null, 2);
+    return JSON.stringify({ name: name || 'Economy Notes', currencies: [], exchangeRates: [], tradeGoods: [], regions: [] }, null, 2);
 
   if (type === 'bestiary')
-    return JSON.stringify({ name: 'My Bestiary', beasts: [] }, null, 2);
+    return JSON.stringify({ name: name || 'My Bestiary', beasts: [] }, null, 2);
 
   return '';
 }
@@ -353,7 +358,7 @@ function createFile(name, type, content)
   const fileId = 'f_' + Date.now();
 
   if (content === undefined)
-    content = defaultContentForType(type);
+    content = defaultContentForType(type, name);
 
   files[fileId] =
   {
@@ -573,6 +578,8 @@ function renderFileList()
     if (f.content && f.content.toLowerCase().indexOf(_searchQ) !== -1) return true;
     return false;
   });
+
+  renderOpenTabs(); // names/active state shown in the tab bar change on the same events
 
   if (Object.keys(folders).length === 0)
   {
@@ -858,6 +865,32 @@ function applySidebarCollapse()
   document.getElementById('sidebar').classList.toggle('sidebar--rail', sidebarCollapsed);
 }
 
+// ── MOBILE SIDEBAR DRAWER ──
+// On narrow screens the sidebar is off-canvas; a floating button slides it
+// in over a backdrop, and picking a file slides it back out.
+
+function toggleMobileSidebar()
+{
+  var sidebar = document.getElementById('sidebar'),
+      open = !sidebar.classList.contains('mobile-open');
+
+  // The rail (icons-only) state is a desktop concept — a drawer opens full.
+  if (open && sidebarCollapsed)
+    toggleSidebarCollapse();
+
+  sidebar.classList.toggle('mobile-open', open);
+  document.getElementById('mobile-backdrop').classList.toggle('open', open);
+}
+
+function closeMobileSidebar()
+{
+  var sidebar = document.getElementById('sidebar'),
+      backdrop = document.getElementById('mobile-backdrop');
+
+  if (sidebar) sidebar.classList.remove('mobile-open');
+  if (backdrop) backdrop.classList.remove('open');
+}
+
 // ── BACKLINKS INDEX ────────────────────────────────────────
 //
 // Stored in _lkbl.json at the work-folder root (or localStorage key "lk_bl").
@@ -897,10 +930,12 @@ async function saveBacklinksIndex()
   }
 }
 
-// Returns list of file ids that sourceId currently mentions by name
+// Returns list of file ids that sourceId currently mentions by name.
+// Outside Work Folder mode content always lives in memory, so only the
+// lazily-loaded work-folder files can be "not loaded yet".
 function computeMentionsListFor(sourceId)
 {
-  if (!files[sourceId] || !files[sourceId].contentLoaded) return [];
+  if (!files[sourceId] || (workFolderRoot && !files[sourceId].contentLoaded)) return [];
   var text = extractSearchableText(sourceId).toLowerCase();
   var out  = [];
   Object.keys(files).forEach(function(targetId)
@@ -915,7 +950,7 @@ function computeMentionsListFor(sourceId)
 // Called when a file is opened or saved — updates only changed entries in the index.
 async function updateBacklinksForFile(sourceId)
 {
-  if (!files[sourceId] || !files[sourceId].contentLoaded) return;
+  if (!files[sourceId] || (workFolderRoot && !files[sourceId].contentLoaded)) return;
 
   var newMentions = computeMentionsListFor(sourceId);
   var oldMentions = files[sourceId].lkMentions || [];
@@ -969,6 +1004,643 @@ function toggleFolderExpanded(path)
     expandedFolders.add(path);
 
   renderFileList();
+}
+
+// ── OPEN-FILE TABS (desktop) ───────────────────────────────
+//
+// Every file opened gets a browser-style tab above the editor, so switching
+// between a handful of working files doesn't mean hunting the sidebar. The
+// bar is hidden on phones via CSS (the sidebar drawer plays that role there).
+// Tab entries are file ids, so Work Folder renames/moves must remap them
+// (remapOpenTab) and structural refreshes must drop dead ids (pruneOpenTabs).
+
+var openTabs = [];
+
+function loadOpenTabs()
+{
+  try
+  {
+    var raw = localStorage.getItem('lk_tabs');
+    openTabs = raw ? JSON.parse(raw).filter(function(id) { return !!files[id]; }) : [];
+  }
+  catch(e) { openTabs = []; }
+  renderOpenTabs();
+}
+
+function persistOpenTabs()
+{
+  try { localStorage.setItem('lk_tabs', JSON.stringify(openTabs)); } catch(e) {}
+}
+
+function noteTabOpened(id)
+{
+  if (id === SHARED_TMP_ID || !files[id])
+    return;
+
+  if (openTabs.indexOf(id) < 0)
+  {
+    openTabs.push(id);
+    persistOpenTabs();
+  }
+
+  renderOpenTabs();
+}
+
+function remapOpenTab(oldId, newId)
+{
+  var i = openTabs.indexOf(oldId);
+
+  if (i < 0)
+    return;
+
+  if (openTabs.indexOf(newId) >= 0)
+    openTabs.splice(i, 1); // already open under the new id - drop the stale one
+  else
+    openTabs[i] = newId;
+
+  persistOpenTabs();
+  renderOpenTabs();
+}
+
+function pruneOpenTabs()
+{
+  var before = openTabs.length;
+  openTabs = openTabs.filter(function(id) { return !!files[id]; });
+
+  if (openTabs.length !== before)
+    persistOpenTabs();
+
+  renderOpenTabs();
+}
+
+function closeOpenTab(e, id)
+{
+  e.stopPropagation();
+
+  var i = openTabs.indexOf(id);
+
+  if (i >= 0)
+  {
+    openTabs.splice(i, 1);
+    persistOpenTabs();
+  }
+
+  // Closing the active tab moves to a neighbor; closing the last one leaves
+  // the editors empty, same as after deleting the open file.
+  if (currentFileId === id)
+  {
+    var next = openTabs[Math.min(i, openTabs.length - 1)];
+
+    if (next)
+    {
+      openFile(next);
+      return;
+    }
+
+    currentFileId = null;
+    clearActiveEditors();
+    renderFileList();
+  }
+
+  renderOpenTabs();
+}
+
+function renderOpenTabs()
+{
+  var bar = document.getElementById('open-tabs-bar');
+
+  if (!bar)
+    return;
+
+  var tabs = openTabs.filter(function(id) { return !!files[id]; });
+
+  if (!tabs.length)
+  {
+    bar.innerHTML = '';
+    bar.style.display = 'none';
+    return;
+  }
+
+  bar.style.display = '';
+  bar.innerHTML = tabs.map(function(id)
+  {
+    var f = files[id];
+
+    return '<div class="open-tab' + (id === currentFileId ? ' active' : '') + '" onclick="openFile(\'' + escAttr(id) + '\')" title="' + escAttr(f.name) + '">' +
+             '<span class="open-tab-icon">' + fileTypeIcon(f.type) + '</span>' +
+             '<span class="open-tab-name">' + escHtml(f.name) + '</span>' +
+             '<button class="open-tab-close" onclick="closeOpenTab(event,\'' + escAttr(id) + '\')" title="Close tab">×</button>' +
+           '</div>';
+  }).join('');
+
+  var active = bar.querySelector('.open-tab.active');
+
+  if (active && active.scrollIntoView)
+    active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+// ── RELATIONSHIP GRAPH (desktop) ───────────────────────────
+//
+// Force-directed view of how files relate: solid edges are explicit
+// cross-file links ([text](lorekeep://file/<id>) in Documents), faint edges
+// are name mentions (the same signal that feeds the backlinks index). Plain
+// canvas + a tiny simulation - no vendored graph library needed at the scale
+// of a personal archive.
+
+var relState = null; // { nodes, edges, raf, ... } while the modal is open
+
+// User-tunable layout: spacing = spring rest length in px (how far apart
+// connected nodes sit; repulsion scales with it so density feels uniform),
+// size = node radius percentage. Persisted so the graph opens how you left it.
+var relPrefs = { spacing: 110, size: 100 };
+
+function loadRelPrefs()
+{
+  try
+  {
+    var raw = localStorage.getItem('lk_rel_prefs');
+    if (raw)
+    {
+      var p = JSON.parse(raw);
+      if (p.spacing >= 40 && p.spacing <= 300) relPrefs.spacing = p.spacing;
+      if (p.size >= 50 && p.size <= 250)       relPrefs.size = p.size;
+    }
+  }
+  catch(e) {}
+}
+
+function saveRelPrefs()
+{
+  try { localStorage.setItem('lk_rel_prefs', JSON.stringify(relPrefs)); } catch(e) {}
+}
+
+function relApplyPrefs()
+{
+  if (!relState)
+    return;
+
+  relState.nodes.forEach(function(n) { n.r = n.baseR * relPrefs.size / 100; });
+  relState.alpha = Math.max(relState.alpha, 0.6); // reheat so the layout re-settles
+}
+
+function onRelSpacingChange(v)
+{
+  relPrefs.spacing = parseInt(v, 10) || 110;
+  saveRelPrefs();
+  relApplyPrefs();
+}
+
+function onRelSizeChange(v)
+{
+  relPrefs.size = parseInt(v, 10) || 100;
+  saveRelPrefs();
+  relApplyPrefs();
+}
+
+var REL_TYPE_COLORS =
+{
+  doc:      '#3498db',
+  sheet:    '#2ecc71',
+  graph:    '#9b59b6',
+  notebook: '#e67e22',
+  glossary: '#f1c40f',
+  calendar: '#4a9fc8',
+  economy:  '#e8a832',
+  bestiary: '#e74c3c'
+};
+
+var REL_TYPE_LABELS =
+{
+  doc: 'Document', sheet: 'Spreadsheet', graph: 'Diagram', notebook: 'Notebook',
+  glossary: 'Glossary', calendar: 'Calendar', economy: 'Economy', bestiary: 'Bestiary'
+};
+
+// Explicit doc links: any lorekeep://file/<url-encoded id> occurrence.
+function relExplicitTargets(content)
+{
+  var out = [], re = /lorekeep:\/\/file\/([^)\s"'<>]+)/g, m;
+
+  while ((m = re.exec(content || '')))
+  {
+    try { out.push(decodeURIComponent(m[1])); }
+    catch(e) {}
+  }
+
+  return out;
+}
+
+async function relEnsureContentsLoaded()
+{
+  if (!workFolderRoot)
+    return;
+
+  var pending = Object.keys(files).filter(function(id)
+  {
+    return id !== SHARED_TMP_ID && !files[id].contentLoaded;
+  });
+
+  await Promise.all(pending.map(function(id)
+  {
+    return Platform.readWorkFile(workFolderRoot, id)
+            .then(function(c) { files[id].content = c; files[id].contentLoaded = true; })
+            .catch(function() {});
+  }));
+}
+
+function relBuildGraph()
+{
+  var ids = Object.keys(files).filter(function(id) { return id !== SHARED_TMP_ID; });
+
+  var nodes = ids.map(function(id, i)
+  {
+    var angle = (i / Math.max(ids.length, 1)) * Math.PI * 2;
+
+    return {
+      id: id,
+      name: files[id].name,
+      type: files[id].type,
+      x: Math.cos(angle) * 160 + (Math.random() - 0.5) * 40,
+      y: Math.sin(angle) * 160 + (Math.random() - 0.5) * 40,
+      vx: 0, vy: 0,
+      degree: 0
+    };
+  });
+
+  var nodeById = {};
+  nodes.forEach(function(n) { nodeById[n.id] = n; });
+
+  // Edge key "src|tgt" (undirected: smaller id first) → { a, b, kind }.
+  // Explicit links win over mere mentions when both exist for a pair.
+  var edgeMap = {};
+
+  function addEdge(src, tgt, kind)
+  {
+    if (src === tgt || !nodeById[src] || !nodeById[tgt])
+      return;
+
+    var key = src < tgt ? src + '|' + tgt : tgt + '|' + src;
+
+    if (!edgeMap[key])
+      edgeMap[key] = { a: nodeById[src], b: nodeById[tgt], kind: kind };
+    else if (kind === 'link')
+      edgeMap[key].kind = 'link';
+  }
+
+  ids.forEach(function(id)
+  {
+    relExplicitTargets(files[id].content).forEach(function(tgt) { addEdge(id, tgt, 'link'); });
+    computeMentionsListFor(id).forEach(function(tgt) { addEdge(id, tgt, 'mention'); });
+  });
+
+  var edges = Object.keys(edgeMap).map(function(k) { return edgeMap[k]; });
+
+  edges.forEach(function(e) { e.a.degree++; e.b.degree++; });
+  nodes.forEach(function(n)
+  {
+    n.baseR = Math.min(7 + Math.sqrt(n.degree) * 3.2, 18);
+    n.r = n.baseR * relPrefs.size / 100;
+  });
+
+  return { nodes: nodes, edges: edges };
+}
+
+async function openRelationsGraph()
+{
+  document.getElementById('relations-modal').style.display = 'flex';
+
+  loadRelPrefs();
+  document.getElementById('rel-spacing').value = relPrefs.spacing;
+  document.getElementById('rel-size').value    = relPrefs.size;
+
+  await relEnsureContentsLoaded();
+
+  var graph  = relBuildGraph(),
+      wrap   = document.querySelector('.relations-canvas-wrap'),
+      canvas = document.getElementById('relations-canvas');
+
+  document.getElementById('relations-empty').style.display = graph.edges.length ? 'none' : '';
+
+  // Legend: file types actually present, plus the two edge kinds
+  var typesPresent = {};
+  graph.nodes.forEach(function(n) { typesPresent[n.type] = true; });
+
+  document.getElementById('relations-legend').innerHTML =
+    Object.keys(typesPresent).map(function(t)
+    {
+      return '<span class="rel-legend-item"><span class="rel-legend-dot" style="background:' + (REL_TYPE_COLORS[t] || '#9ca3af') + '"></span>' + escHtml(REL_TYPE_LABELS[t] || t) + '</span>';
+    }).join('') +
+    '<span class="rel-legend-item"><span class="rel-legend-line"></span>Linked</span>' +
+    '<span class="rel-legend-item"><span class="rel-legend-line rel-legend-line-dim"></span>Mentions</span>';
+
+  var css = getComputedStyle(document.documentElement);
+
+  relState =
+  {
+    nodes: graph.nodes,
+    edges: graph.edges,
+    canvas: canvas,
+    ctx: canvas.getContext('2d'),
+    wrap: wrap,
+    scale: 1, tx: 0, ty: 0,
+    alpha: 1,
+    dragNode: null,
+    panning: false,
+    pointerDown: null,
+    hovered: null,
+    raf: 0,
+    textColor:  (css.getPropertyValue('--text')  || '#ddd').trim(),
+    edgeColor:  (css.getPropertyValue('--text3') || '#888').trim(),
+    haloColor:  (css.getPropertyValue('--bg')    || '#16181d').trim(),
+    resize: function() { relResizeCanvas(); }
+  };
+
+  window.addEventListener('resize', relState.resize);
+  relAttachPointerHandlers();
+  relResizeCanvas();
+  relState.raf = requestAnimationFrame(relTick);
+}
+
+function closeRelationsGraph()
+{
+  document.getElementById('relations-modal').style.display = 'none';
+
+  if (!relState)
+    return;
+
+  cancelAnimationFrame(relState.raf);
+  window.removeEventListener('resize', relState.resize);
+  relState = null;
+}
+
+function relResizeCanvas()
+{
+  if (!relState)
+    return;
+
+  var dpr = window.devicePixelRatio || 1,
+      w = relState.wrap.clientWidth,
+      h = relState.wrap.clientHeight;
+
+  relState.canvas.width  = w * dpr;
+  relState.canvas.height = h * dpr;
+  relState.canvas.style.width  = w + 'px';
+  relState.canvas.style.height = h + 'px';
+  relState.dpr = dpr;
+  relState.w = w;
+  relState.h = h;
+}
+
+// One simulation step: pairwise repulsion, spring along edges, weak pull to
+// the center. Standard velocity-Verlet-ish integration with damping; alpha
+// cools the whole system down so the layout settles instead of jittering.
+function relStep()
+{
+  var s = relState,
+      nodes = s.nodes,
+      edges = s.edges,
+      alpha = s.alpha,
+      spacing = relPrefs.spacing,
+      spacingF = spacing / 110,
+      repelK = 1600 * spacingF * spacingF,
+      cutoff2 = Math.pow(spacing * 3.6, 2), // beyond ~3.6× spacing repulsion is negligible
+      i, j, a, b, dx, dy, d2, d, f;
+
+  for (i = 0; i < nodes.length; i++)
+    for (j = i + 1; j < nodes.length; j++)
+    {
+      a = nodes[i]; b = nodes[j];
+      dx = b.x - a.x; dy = b.y - a.y;
+      d2 = dx * dx + dy * dy || 1;
+
+      if (d2 > cutoff2) continue;
+
+      f = (repelK / d2) * alpha;
+      d = Math.sqrt(d2);
+      dx /= d; dy /= d;
+      a.vx -= dx * f; a.vy -= dy * f;
+      b.vx += dx * f; b.vy += dy * f;
+    }
+
+  for (i = 0; i < edges.length; i++)
+  {
+    a = edges[i].a; b = edges[i].b;
+    dx = b.x - a.x; dy = b.y - a.y;
+    d = Math.sqrt(dx * dx + dy * dy) || 1;
+    f = (d - spacing) * 0.02 * alpha * (edges[i].kind === 'link' ? 1.6 : 1);
+    dx /= d; dy /= d;
+    a.vx += dx * f; a.vy += dy * f;
+    b.vx -= dx * f; b.vy -= dy * f;
+  }
+
+  for (i = 0; i < nodes.length; i++)
+  {
+    a = nodes[i];
+    a.vx -= a.x * 0.004 * alpha;
+    a.vy -= a.y * 0.004 * alpha;
+
+    if (a === s.dragNode) { a.vx = 0; a.vy = 0; continue; }
+
+    a.vx *= 0.85; a.vy *= 0.85;
+    a.x += a.vx; a.y += a.vy;
+  }
+
+  s.alpha = Math.max(alpha * 0.985, 0.02);
+}
+
+function relDraw()
+{
+  var s = relState,
+      ctx = s.ctx;
+
+  ctx.setTransform(s.dpr, 0, 0, s.dpr, 0, 0);
+  ctx.clearRect(0, 0, s.w, s.h);
+  ctx.translate(s.w / 2 + s.tx, s.h / 2 + s.ty);
+  ctx.scale(s.scale, s.scale);
+
+  var i, e, n,
+      hover = s.hovered;
+
+  for (i = 0; i < s.edges.length; i++)
+  {
+    e = s.edges[i];
+
+    var touched = hover && (e.a === hover || e.b === hover);
+
+    ctx.globalAlpha = e.kind === 'link' ? (touched ? 0.95 : 0.55) : (touched ? 0.7 : 0.22);
+    ctx.strokeStyle = touched ? (REL_TYPE_COLORS[hover.type] || s.edgeColor) : s.edgeColor;
+    ctx.lineWidth = (e.kind === 'link' ? 1.8 : 1) / s.scale + (e.kind === 'link' ? 0.6 : 0.2);
+    ctx.beginPath();
+    ctx.moveTo(e.a.x, e.a.y);
+    ctx.lineTo(e.b.x, e.b.y);
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+
+  for (i = 0; i < s.nodes.length; i++)
+  {
+    n = s.nodes[i];
+
+    var dimmed = hover && n !== hover && !s.edges.some(function(e) { return (e.a === hover && e.b === n) || (e.b === hover && e.a === n); });
+
+    ctx.globalAlpha = dimmed ? 0.25 : 1;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    ctx.fillStyle = REL_TYPE_COLORS[n.type] || '#9ca3af';
+    ctx.fill();
+
+    if (n === hover)
+    {
+      ctx.lineWidth = 2 / s.scale;
+      ctx.strokeStyle = s.textColor;
+      ctx.stroke();
+    }
+
+    // Labels stay a constant on-screen size regardless of zoom (divide by
+    // scale since the canvas is scaled), grow a little with the node-size
+    // slider, and get a halo in the background color so they stay readable
+    // when they cross edges or other labels.
+    var fontPx = Math.min(11 * (0.75 + (relPrefs.size / 100) * 0.35), 17) / s.scale,
+        label = n.name.length > 24 ? n.name.slice(0, 22) + '…' : n.name;
+
+    ctx.font = (n === hover ? 'bold ' : '') + fontPx.toFixed(2) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3.5 / s.scale;
+    ctx.strokeStyle = s.haloColor;
+    ctx.strokeText(label, n.x, n.y + n.r + 14 / s.scale);
+    ctx.fillStyle = s.textColor;
+    ctx.fillText(label, n.x, n.y + n.r + 14 / s.scale);
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+function relTick()
+{
+  if (!relState)
+    return;
+
+  if (relState.alpha > 0.021 || relState.dragNode)
+    relStep();
+
+  relDraw();
+  relState.raf = requestAnimationFrame(relTick);
+}
+
+// Screen px → graph coordinates
+function relToGraph(px, py)
+{
+  var s = relState,
+      rect = s.canvas.getBoundingClientRect();
+
+  return {
+    x: (px - rect.left - s.w / 2 - s.tx) / s.scale,
+    y: (py - rect.top  - s.h / 2 - s.ty) / s.scale
+  };
+}
+
+function relNodeAt(px, py)
+{
+  var p = relToGraph(px, py),
+      nodes = relState.nodes;
+
+  for (var i = nodes.length - 1; i >= 0; i--)
+  {
+    var dx = p.x - nodes[i].x,
+        dy = p.y - nodes[i].y,
+        hit = nodes[i].r + 4 / relState.scale;
+
+    if (dx * dx + dy * dy <= hit * hit)
+      return nodes[i];
+  }
+
+  return null;
+}
+
+function relAttachPointerHandlers()
+{
+  var canvas = relState.canvas;
+
+  canvas.onpointerdown = function(e)
+  {
+    if (!relState) return;
+    canvas.setPointerCapture(e.pointerId);
+    var n = relNodeAt(e.clientX, e.clientY);
+    relState.pointerDown = { x: e.clientX, y: e.clientY, moved: false, node: n };
+
+    if (n) { relState.dragNode = n; relState.alpha = Math.max(relState.alpha, 0.3); }
+    else   relState.panning = true;
+  };
+
+  canvas.onpointermove = function(e)
+  {
+    if (!relState) return;
+
+    var pd = relState.pointerDown;
+
+    if (pd)
+    {
+      if (Math.abs(e.clientX - pd.x) + Math.abs(e.clientY - pd.y) > 4)
+        pd.moved = true;
+
+      if (relState.dragNode)
+      {
+        var p = relToGraph(e.clientX, e.clientY);
+        relState.dragNode.x = p.x;
+        relState.dragNode.y = p.y;
+        relState.alpha = Math.max(relState.alpha, 0.25);
+      }
+      else if (relState.panning)
+      {
+        relState.tx += e.movementX;
+        relState.ty += e.movementY;
+      }
+    }
+    else
+    {
+      relState.hovered = relNodeAt(e.clientX, e.clientY);
+      canvas.style.cursor = relState.hovered ? 'pointer' : 'grab';
+    }
+  };
+
+  canvas.onpointerup = function(e)
+  {
+    if (!relState) return;
+
+    var pd = relState.pointerDown;
+
+    // A press-and-release on a node without dragging opens that file
+    if (pd && pd.node && !pd.moved)
+    {
+      var id = pd.node.id;
+      closeRelationsGraph();
+      openFile(id);
+      return;
+    }
+
+    relState.pointerDown = null;
+    relState.dragNode = null;
+    relState.panning = false;
+  };
+
+  canvas.onwheel = function(e)
+  {
+    if (!relState) return;
+    e.preventDefault();
+
+    var factor = e.deltaY < 0 ? 1.12 : 1 / 1.12,
+        next = Math.min(Math.max(relState.scale * factor, 0.25), 4);
+
+    // Zoom around the cursor: keep the graph point under it fixed
+    var rect = relState.canvas.getBoundingClientRect(),
+        cx = e.clientX - rect.left - relState.w / 2,
+        cy = e.clientY - rect.top  - relState.h / 2;
+
+    relState.tx = cx - (cx - relState.tx) * (next / relState.scale);
+    relState.ty = cy - (cy - relState.ty) * (next / relState.scale);
+    relState.scale = next;
+  };
 }
 
 // ── FILE HISTORY (one entry per "close" - switching away, or app exit) ──
@@ -1535,6 +2207,8 @@ async function openFile(id)
 
   switchAppType(file.type, false);
   renderFileList();
+  noteTabOpened(id);
+  closeMobileSidebar(); // picking a file dismisses the phone drawer
 
   if (file.type === 'doc')
     loadDocFile(file);
@@ -1615,6 +2289,7 @@ async function deleteFile(e, id)
   }
 
   saveToStorage();
+  pruneOpenTabs();
   renderFileList();
 }
 
@@ -1724,6 +2399,7 @@ async function loadWorkFolderTree()
   if (currentFileId && !files[currentFileId])
     currentFileId = null;
 
+  pruneOpenTabs(); // ids are rel paths; anything renamed/moved/deleted on disk is gone
   renderFileList();
 }
 
@@ -1735,7 +2411,7 @@ async function createWorkFile(name, type, content)
 
   try
   {
-    await Platform.writeWorkFile(workFolderRoot, relPath, content !== undefined ? content : defaultContentForType(type));
+    await Platform.writeWorkFile(workFolderRoot, relPath, content !== undefined ? content : defaultContentForType(type, name));
   }
   catch(e)
   {
@@ -1801,6 +2477,8 @@ async function persistFileEntry(id)
 
       if (currentFileId === id)
         currentFileId = desiredRelPath;
+
+      remapOpenTab(id, desiredRelPath);
 
       activeId = desiredRelPath;
 
@@ -2028,9 +2706,18 @@ async function moveEntryToFolder(id, targetFolderPath)
 
   if (isDir)
   {
+    // Keep tabs for files inside the moved folder alive under their new paths
+    openTabs = openTabs.map(function(t)
+    {
+      return t.indexOf(id + '/') === 0 ? toRelPath + t.slice(id.length) : t;
+    });
+    persistOpenTabs();
+
     expandedFolders.delete(id);
     expandedFolders.add(toRelPath);
   }
+  else
+    remapOpenTab(id, toRelPath);
 
   await loadWorkFolderTree();
   return true;
@@ -2246,7 +2933,9 @@ function loadGlossaryFile(file)
   catch(e) { glsData = {}; }
   if (!glsData.entries) glsData.entries = [];
   if (!glsData.roots)   glsData.roots   = [];
-  document.getElementById('glossary-title-input').value = glsData.name || file.name || '';
+  // The file's own (user-given) name wins over the embedded title, so a
+  // canned default inside the JSON can never rename the file on save.
+  document.getElementById('glossary-title-input').value = file.name || glsData.name || '';
   glsQuery = '';
   document.getElementById('gls-search').value = '';
   switchGlossaryTab('words');
@@ -2461,7 +3150,7 @@ function loadBestiaryFile(file)
   try { bstData = JSON.parse(file.content || '{}'); }
   catch(e) { bstData = {}; }
   if (!bstData.beasts) bstData.beasts = [];
-  document.getElementById('bestiary-title-input').value = bstData.name || file.name || '';
+  document.getElementById('bestiary-title-input').value = file.name || bstData.name || '';
   bstQuery = '';
   document.getElementById('bst-search').value = '';
   renderBestiary();
@@ -2599,7 +3288,7 @@ function loadCalendarFile(file)
   if (!calData.epochFictionYear) calData.epochFictionYear = 1;
   if (!calData.daysPerYear)      calData.daysPerYear      = 365;
 
-  document.getElementById('calendar-title-input').value = calData.name || file.name || '';
+  document.getElementById('calendar-title-input').value = file.name || calData.name || '';
   document.getElementById('cal-days-per-year').value    = calData.daysPerYear;
   document.getElementById('cal-epoch-real').value       = calData.epochRealDate;
   switchCalendarTab('months');
@@ -3010,7 +3699,7 @@ function loadEconomyFile(file)
   if (!ecoData.exchangeRates) ecoData.exchangeRates = [];
   if (!ecoData.tradeGoods)    ecoData.tradeGoods    = [];
   if (!ecoData.regions)       ecoData.regions       = [];
-  document.getElementById('economy-title-input').value = ecoData.name || file.name || '';
+  document.getElementById('economy-title-input').value = file.name || ecoData.name || '';
   switchEconomyTab('currencies');
   renderEconomy();
 }
@@ -4566,33 +5255,120 @@ document.getElementById('file-link-modal').addEventListener
   }
 );
 
+// Folders the user collapsed inside the Link-file modal (session-scoped).
+// Everything starts expanded: the point of the tree is browsing by location.
+var fileLinkCollapsed = new Set();
+
+function toggleFileLinkFolder(path)
+{
+  if (fileLinkCollapsed.has(path))
+    fileLinkCollapsed.delete(path);
+  else
+    fileLinkCollapsed.add(path);
+
+  renderFileLinkList();
+}
+
+function fileLinkRowHtml(id, f, depth, subtitle)
+{
+  var canEmbed = (f.type === 'graph' || f.type === 'sheet');
+
+  return  '<div class="file-link-item" style="margin-left:' + (depth * 16) + 'px" onclick="chooseFileLink(\'' + escAttr(id) + '\')">' +
+            '<span class="file-icon">' + fileTypeIcon(f.type) + '</span>' +
+            '<span class="file-link-item-name">' + escHtml(f.name) +
+              (subtitle ? '<span class="file-link-item-path">' + escHtml(subtitle) + '</span>' : '') +
+            '</span>' +
+            (canEmbed ? '<button class="file-link-embed-btn" onclick="event.stopPropagation();chooseFileEmbed(\'' + escAttr(id) + '\')">Embed</button>' : '') +
+          '</div>';
+}
+
+// Mirrors the sidebar's folder tree so files can be found by where they
+// live, not just by name. Searching flattens the tree (matches from any
+// folder) but keeps each hit's folder path visible as a subtitle.
 function renderFileLinkList()
 {
   var query = document.getElementById('file-link-search').value.trim().toLowerCase(),
       list = document.getElementById('file-link-list'),
-      entries = Object.keys(files)
-                  .map(function(id){ return [id, files[id]]; })
-                  .filter(function(e){ return !query || e[1].name.toLowerCase().indexOf(query) !== -1; });
+      ids = Object.keys(files).filter(function(id)
+      {
+        return id !== SHARED_TMP_ID && id !== currentFileId; // no self-links
+      });
 
-  entries.sort(function(a, b){ return (b[1].modified || 0) - (a[1].modified || 0); });
+  function byName(a, b) { return files[a].name.localeCompare(files[b].name); }
 
-  if (!entries.length)
+  if (query)
   {
-    list.innerHTML = '<div class="history-empty">No matching files.</div>';
+    var matches = ids.filter(function(id) { return files[id].name.toLowerCase().indexOf(query) !== -1; })
+                     .sort(byName);
+
+    list.innerHTML = matches.length
+                      ?
+                        matches.map(function(id)
+                        {
+                          return fileLinkRowHtml(id, files[id], 0, files[id].folder ? files[id].folder + '/' : '');
+                        }).join('')
+                      :
+                        '<div class="history-empty">No matching files.</div>';
     return;
   }
 
-  list.innerHTML = entries.map(function(e)
+  // No folders (e.g. browser-storage mode): flat list, most recent first
+  if (Object.keys(folders).length === 0)
   {
-    var id = e[0], f = e[1],
-        canEmbed = (f.type === 'graph' || f.type === 'sheet');
+    var flat = ids.sort(function(a, b) { return (files[b].modified || 0) - (files[a].modified || 0); });
 
-    return  '<div class="file-link-item" onclick="chooseFileLink(\'' + escAttr(id) + '\')">' +
-              '<span class="file-icon">' + fileTypeIcon(f.type) + '</span>' +
-              '<span class="file-link-item-name">' + escHtml(f.name) + '</span>' +
-              (canEmbed ? '<button class="file-link-embed-btn" onclick="event.stopPropagation();chooseFileEmbed(\'' + escAttr(id) + '\')">Embed</button>' : '') +
-            '</div>';
-  }).join('');
+    list.innerHTML = flat.length
+                      ? flat.map(function(id) { return fileLinkRowHtml(id, files[id], 0, ''); }).join('')
+                      : '<div class="history-empty">No other files yet.</div>';
+    return;
+  }
+
+  var byFolder = {},
+      childFolders = {};
+
+  ids.forEach(function(id)
+  {
+    var parent = files[id].folder || '';
+    (byFolder[parent] = byFolder[parent] || []).push(id);
+  });
+
+  Object.keys(folders).forEach(function(path)
+  {
+    var parent = folders[path].parent || '';
+    (childFolders[parent] = childFolders[parent] || []).push(path);
+  });
+
+  function renderLevel(parentPath, depth)
+  {
+    var html = '';
+
+    (childFolders[parentPath] || []).slice().sort(function(a, b)
+    {
+      return folders[a].name.localeCompare(folders[b].name);
+    })
+    .forEach(function(path)
+    {
+      var collapsed = fileLinkCollapsed.has(path);
+
+      html += '<div class="file-link-folder" style="margin-left:' + (depth * 16) + 'px" onclick="toggleFileLinkFolder(\'' + escAttr(path) + '\')">' +
+                '<span class="folder-caret' + (collapsed ? '' : ' expanded') + '">' + CHEVRON_ICON + '</span>' +
+                '<span class="file-icon">' + FOLDER_ICON + '</span>' +
+                '<span class="file-link-item-name">' + escHtml(folders[path].name) + '</span>' +
+              '</div>';
+
+      if (!collapsed)
+        html += renderLevel(path, depth + 1);
+    });
+
+    (byFolder[parentPath] || []).slice().sort(byName).forEach(function(id)
+    {
+      html += fileLinkRowHtml(id, files[id], depth, '');
+    });
+
+    return html;
+  }
+
+  list.innerHTML = renderLevel('', 0) || '<div class="history-empty">No other files yet.</div>';
 }
 
 function chooseFileLink(fileId)
