@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lore Keep</title>
-  <link rel="stylesheet" href="styles.css?v=13">
+  <link rel="stylesheet" href="styles.css?v=14">
 </head>
 <body>
   <div id="auth-gate" style="position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;background:#14161a;font-family:system-ui,sans-serif;">
@@ -29,6 +29,9 @@
   </div>
 
   <div id="app">
+
+    <button id="mobile-menu-btn" class="mobile-menu-btn" onclick="toggleMobileSidebar()" title="Files &amp; apps"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+    <div id="mobile-backdrop" class="mobile-backdrop" onclick="closeMobileSidebar()"></div>
 
     <div id="sidebar">
 
@@ -65,9 +68,6 @@
         <button class="app-tab" onclick="switchAppType('economy')" id="tab-economy" title="Currency &amp; Economy">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M14.8 9A2 2 0 0 0 13 8h-2a2 2 0 0 0 0 4h2a2 2 0 0 1 0 4h-2a2 2 0 0 1-1.8-1"/><line x1="12" y1="6" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="18"/></svg>
         </button>
-        <button class="app-tab" onclick="switchAppType('bestiary')" id="tab-bestiary" title="Bestiary">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5.5" cy="10" r="1.6"/><circle cx="9.5" cy="6.5" r="1.6"/><circle cx="14.5" cy="6.5" r="1.6"/><circle cx="18.5" cy="10" r="1.6"/><path d="M12 11c-2.6 0-5.5 2.6-5.5 5a3 3 0 0 0 3 3c1 0 1.7-.5 2.5-.5s1.5.5 2.5.5a3 3 0 0 0 3-3c0-2.4-2.9-5-5.5-5z"/></svg>
-        </button>
       </div> <!-- END SIDEBAR TABS -->
 
       <div class="sidebar-section" ondragenter="handleDragEnter(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event,'')" oncontextmenu="openContextMenu(event,'root','')">
@@ -97,6 +97,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           <span class="btn-new-label">New</span>
         </button> <!-- New file button -->
+
+        <button class="btn-icon" id="relations-btn" onclick="openRelationsGraph()" title="Relationship graph — how your files link together">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="5" r="2.4"/><circle cx="19" cy="7" r="2.4"/><circle cx="8" cy="19" r="2.4"/><circle cx="17" cy="16" r="2.4"/><line x1="7" y1="6.2" x2="16.8" y2="6.7"/><line x1="6" y1="7.3" x2="7.4" y2="16.8"/><line x1="10.3" y1="18.2" x2="14.8" y2="16.8"/><line x1="18.3" y1="9.2" x2="17.3" y2="13.7"/></svg>
+        </button> <!-- Relationship graph (desktop) -->
 
         <div style="position:relative;">
           <button class="btn-icon" id="file-menu-btn" onclick="toggleFileMenu(event)" title="More options">
@@ -129,6 +133,9 @@
     </div> <!-- END SIDEBAR -->
 
     <div id="main">
+      <!-- Open-file tabs (desktop only; hidden on phones via CSS) -->
+      <div id="open-tabs-bar" style="display:none"></div>
+
       <!-- DOC APP -->
       <div id="doc-app" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
         <div id="toolbar">
@@ -903,6 +910,28 @@
     </div>
   </div>
 
+  <!-- RELATIONSHIP GRAPH -->
+  <div class="modal-overlay" id="relations-modal" onclick="if(event.target===this)closeRelationsGraph()">
+    <div class="relations-shell">
+      <div class="relations-head">
+        <h3>Relationship graph</h3>
+        <label class="rel-slider-label">Spacing
+          <input type="range" id="rel-spacing" min="40" max="300" step="5" oninput="onRelSpacingChange(this.value)">
+        </label>
+        <label class="rel-slider-label">Node size
+          <input type="range" id="rel-size" min="50" max="250" step="5" oninput="onRelSizeChange(this.value)">
+        </label>
+        <span class="relations-hint">Drag nodes &middot; scroll to zoom &middot; drag the background to pan &middot; click a node to open the file</span>
+        <button class="comments-close" onclick="closeRelationsGraph()" title="Close">×</button>
+      </div>
+      <div class="relations-canvas-wrap">
+        <canvas id="relations-canvas"></canvas>
+        <div class="relations-empty" id="relations-empty" style="display:none">No links between files yet.<br>Link files from a Document with the <strong>Link file</strong> toolbar button, or just mention another file&rsquo;s name in your text.</div>
+      </div>
+      <div class="relations-legend" id="relations-legend"></div>
+    </div>
+  </div>
+
   <input type="file" id="import-input" accept=".mdp,.mds,.mdg,.mdn,.mdl,.mdc,.mde,.md,.csv,.txt" style="display:none" onchange="handleImport(event)">
 
   <script>
@@ -924,7 +953,7 @@
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/chart.umd.js"></script>
-  <script type="text/javascript" src="platform.js?v=13"></script>
+  <script type="text/javascript" src="platform.js?v=14"></script>
   <!-- Shared-file banner (fixed, web only) -->
   <div id="view-only-banner" style="display:none"></div>
 
@@ -978,7 +1007,7 @@
     </div>
   </div>
 
-  <script type="text/javascript" src="auth-gate.js?v=13"></script>
+  <script type="text/javascript" src="auth-gate.js?v=14"></script>
 
   <!-- TRAVEL DETAIL POPOVER -->
   <div id="travel-popover" style="display:none;position:fixed;z-index:901;min-width:300px;max-width:360px;">

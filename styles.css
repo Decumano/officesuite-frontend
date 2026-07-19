@@ -40,6 +40,8 @@ html, body
 {
     display: flex;
     height: 100vh;
+    /* dvh tracks the real visible area on phones (URL bar shows/hides) */
+    height: 100dvh;
 }
 #sidebar
 {
@@ -2539,6 +2541,34 @@ html, body
   border-color: var(--accent);
   color: var(--accent);
 }
+.file-link-folder
+{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--text2);
+  cursor: pointer;
+  border-radius: var(--radius);
+  user-select: none;
+}
+.file-link-folder:hover { background: var(--bg3); }
+.file-link-folder .file-icon
+{
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text3);
+}
+.file-link-item-path
+{
+  display: block;
+  font-size: 11px;
+  color: var(--text3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ── DOCS: interactive task-list checkboxes ── */
 #preview-content input[type="checkbox"].preview-checkbox
@@ -2872,6 +2902,9 @@ mark.gs-hl
   background: var(--bg3); border: 1px solid var(--border);
   box-shadow: 0 4px 28px rgba(0,0,0,.5); border-radius: 10px; overflow: hidden;
   min-height: 200px;
+  /* nbp-body is a fixed-height flex column; without this the page is shrunk
+     to fit and overflow:hidden clips the content, so the list never scrolls */
+  flex-shrink: 0;
 }
 /* Scroll/overflow removed — nbp-body handles scrolling now */
 .gls-scroll-wrap { padding: 16px 20px 24px; }
@@ -3661,4 +3694,276 @@ mark.gs-hl
 .tb-split-arrow svg { width: 10px; height: 10px; }
 .tb-split-arrow input[type="color"] {
   position: absolute; inset: 0; opacity: 0; cursor: pointer; border: none; padding: 0;
+}
+
+/* ══ OPEN-FILE TABS (desktop) ══ */
+
+#open-tabs-bar
+{
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 6px 0;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+  flex-shrink: 0;
+}
+.open-tab
+{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  color: var(--text2);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background .12s, color .12s;
+}
+.open-tab:hover { background: var(--bg3); }
+.open-tab.active
+{
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--text);
+}
+.open-tab-icon svg { width: 13px; height: 13px; display: block; }
+.open-tab-name
+{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+.open-tab-close
+{
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  font-size: 14px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+}
+.open-tab-close:hover { background: var(--border2); color: var(--text); }
+
+/* ══ RELATIONSHIP GRAPH ══ */
+
+#relations-modal { display: none; }
+.relations-shell
+{
+  width: min(1100px, 94vw);
+  height: min(760px, 90vh);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 50px rgba(0,0,0,.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.relations-head
+{
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.relations-head h3 { margin: 0; font-size: 15px; color: var(--text); }
+.relations-hint { flex: 1; font-size: 11.5px; color: var(--text3); }
+.rel-slider-label
+{
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+.rel-slider-label input[type="range"]
+{
+  width: 100px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.relations-canvas-wrap
+{
+  flex: 1;
+  position: relative;
+  background: var(--bg);
+  overflow: hidden;
+}
+#relations-canvas { display: block; touch-action: none; cursor: grab; }
+.relations-empty
+{
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text3);
+  font-size: 13px;
+  line-height: 1.7;
+  pointer-events: none;
+  padding: 20px;
+}
+.relations-legend
+{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text2);
+}
+.rel-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.rel-legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.rel-legend-line { width: 18px; height: 0; border-top: 2px solid var(--text3); display: inline-block; }
+.rel-legend-line-dim { border-top-style: dashed; opacity: .5; }
+
+/* ══ MOBILE (phones) ══
+   The sidebar becomes an off-canvas drawer behind a floating menu button,
+   toolbars scroll horizontally instead of overflowing, split views stack,
+   and modals/panels fit the viewport. */
+
+.mobile-menu-btn,
+.mobile-backdrop { display: none; }
+
+@media (max-width: 768px)
+{
+  /* Off-canvas sidebar drawer */
+  #sidebar
+  {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    z-index: 600;
+    width: min(300px, 85vw);
+    height: 100%;
+    transform: translateX(-100%);
+    transition: transform .2s ease;
+    box-shadow: 0 0 32px rgba(0,0,0,.6);
+  }
+  #sidebar.sidebar--rail { width: min(300px, 85vw); } /* rail is a desktop concept */
+  #sidebar.mobile-open { transform: none; }
+  .sidebar-collapse-area { display: none; }
+
+  .mobile-backdrop
+  {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 599;
+    background: rgba(0,0,0,.55);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s ease;
+  }
+  .mobile-backdrop.open { opacity: 1; pointer-events: auto; }
+
+  .mobile-menu-btn
+  {
+    display: flex;
+    position: fixed;
+    left: 12px; bottom: 14px;
+    z-index: 598;
+    width: 46px; height: 46px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #1a1916;
+    border: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+    cursor: pointer;
+  }
+  .mobile-menu-btn svg { width: 20px; height: 20px; }
+
+  /* Toolbars: one horizontally scrollable row */
+  #toolbar, #sheet-toolbar, #graph-toolbar
+  {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  #toolbar::-webkit-scrollbar,
+  #sheet-toolbar::-webkit-scrollbar,
+  #graph-toolbar::-webkit-scrollbar { display: none; }
+  #toolbar > *, #sheet-toolbar > * { flex-shrink: 0; }
+  .toolbar-title { display: none; }
+  #sheet-toolbar > span,
+  #graph-toolbar > span { display: none; } /* the "Stored as…" hints */
+  .fill-literal-toggle { display: none; }
+  #sheet-toolbar .formula-bar { min-width: 150px; }
+  .function-help-panel { max-width: 92vw; }
+
+  /* Split views stack vertically */
+  #editor-area.split { flex-direction: column; }
+  #editor-area.split #write-pane { border-right: none; border-bottom: 1px solid var(--border); }
+  #graph-editor-area.split { flex-direction: column; }
+  #graph-editor-area.split #graph-write-pane { border-right: none; border-bottom: 1px solid var(--border); }
+
+  /* Modals and floating panels fit the screen */
+  .modal { width: min(440px, 94vw); max-height: 92vh; overflow-y: auto; }
+  .find-replace-panel { left: 8px; right: 8px; flex-wrap: wrap; }
+  .find-replace-panel input:not([type="checkbox"]) { flex: 1 1 120px; width: auto; min-width: 0; }
+  .sheet-chart-box { max-width: calc(100vw - 20px); }
+
+  .nbp-body { padding: 10px; }
+
+  /* Open-file tabs are a desktop affordance; the drawer covers switching */
+  #open-tabs-bar { display: none !important; }
+  #relations-btn { display: none; }
+
+  /* Data-app toolbars (Glossary/Calendar/Economy/Bestiary): one scrollable
+     row instead of wrapping into a tall block that eats the screen */
+  .nbp-toolbar
+  {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .nbp-toolbar::-webkit-scrollbar { display: none; }
+  .nbp-toolbar > * { flex-shrink: 0; }
+  .nbp-toolbar > input:not(.tb-search):not(.tb-input-sm) { width: 130px; }
+  .tb-search { width: 120px; }
+
+  .nbp-body { padding: 8px 6px; }
+  .gls-scroll-wrap { padding: 10px 10px 18px; }
+  .data-table-wrap { padding: 6px 8px 14px; overflow-x: auto; }
+  .eco-curr-wrap { padding: 10px 10px 6px; }
+
+  /* Cards stack and give fingers room */
+  .gls-entry-card { flex-direction: column; gap: 4px; padding: 12px 30px 12px 12px; }
+  .gls-entry-card .gls-card-del { position: absolute; top: 8px; right: 4px; }
+  .eco-currency-cards { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .gls-card-del
+  {
+    width: 28px;
+    height: 28px;
+    font-size: 18px;
+  }
+
+  /* Shared data-entry modal: full-width fields, single column */
+  .dem-grid { grid-template-columns: 1fr !important; }
+  .modal-input, .tb-select { font-size: 16px; } /* ≥16px stops iOS zoom-on-focus */
+
+  /* Relationship graph fills the phone screen if opened there */
+  .relations-shell { width: 100vw; height: 100dvh; border-radius: 0; }
+  .relations-hint { display: none; }
+  .relations-head { flex-wrap: wrap; }
+  .rel-slider-label input[type="range"] { width: 76px; }
 }
