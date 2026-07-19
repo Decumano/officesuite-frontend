@@ -535,6 +535,77 @@ html, body
   flex: 1;
   display: flex;
   overflow: hidden;
+  position: relative; /* anchors the find & replace panel */
+}
+
+/* ── DOCS: find & replace panel ── */
+.find-replace-panel
+{
+  position: absolute;
+  top: 10px;
+  right: 26px;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.find-replace-panel.open
+{
+  display: flex;
+}
+.find-replace-panel input:not([type="checkbox"])
+{
+  width: 150px;
+  padding: 5px 8px;
+  background: var(--bg);
+  color: var(--text1);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  outline: none;
+}
+.find-replace-panel input:not([type="checkbox"]):focus
+{
+  border-color: var(--accent);
+}
+.fr-btn
+{
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  color: var(--text2);
+  border-radius: 4px;
+  padding: 5px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fr-btn:hover
+{
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.fr-case
+{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text3);
+  cursor: pointer;
+  user-select: none;
+}
+#fr-count
+{
+  font-size: 11px;
+  color: var(--text3);
+  min-width: 52px;
+  text-align: center;
 }
 #write-pane
 {
