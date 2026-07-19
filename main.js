@@ -3720,6 +3720,66 @@ function configureMarkedExtensions()
           }
         },
         {
+          // Roman-numeral ordered lists: consecutive lines like "i. item" or
+          // "II) item" render as a real <ol> with roman markers (lowercase
+          // and uppercase are separate lists). Arabic "1." lists are standard
+          // Markdown and unchanged. A lone item only counts when it starts
+          // at i/I, so abbreviations like "c. 1450" stay plain text.
+          name: 'romanList',
+          level: 'block',
+          start: function(src)
+          {
+            var m = /^ {0,3}[ivxlcdmIVXLCDM]+[.)][ \t]/m.exec(src);
+            return m ? m.index : undefined;
+          },
+          tokenizer: function(src)
+          {
+            var itemRe = /^ {0,3}([ivxlcdm]+|[IVXLCDM]+)[.)][ \t]+([^\n]*)(?:\n|$)/,
+                rest = src,
+                raw = '',
+                items = [],
+                lower = null,
+                startNum = 0;
+
+            while (true)
+            {
+              var m = itemRe.exec(rest);
+              if (!m) break;
+
+              var isLower = m[1] === m[1].toLowerCase();
+              if (lower === null) lower = isLower;
+              else if (lower !== isLower) break; // case switch = new list
+
+              var value = romanToInt(m[1]);
+              if (!value) break;
+              if (!items.length) startNum = value;
+
+              raw += m[0];
+              items.push(m[2]);
+              rest = rest.slice(m[0].length);
+            }
+
+            if (!items.length) return undefined;
+            if (items.length === 1 && startNum !== 1) return undefined;
+
+            var lexer = this.lexer;
+            return {
+              type: 'romanList',
+              raw: raw,
+              lower: lower,
+              startNum: startNum,
+              items: items.map(function(text){ return lexer.inlineTokens(text); })
+            };
+          },
+          renderer: function(token)
+          {
+            var parser = this.parser;
+            return '<ol style="list-style-type:' + (token.lower ? 'lower-roman' : 'upper-roman') + ';" start="' + token.startNum + '">' +
+                   token.items.map(function(tokens){ return '<li>' + parser.parseInline(tokens) + '</li>'; }).join('') +
+                   '</ol>\n';
+          }
+        },
+        {
           // Doc metadata fields: key: value pairs in braces, rendered as a
           // styled card. One line — {type: Character, status: Active} — lays
           // the fields out side by side; putting the braces on their own
@@ -3821,6 +3881,33 @@ function configureMarkedExtensions()
 }
 
 configureMarkedExtensions();
+
+// Loose roman-numeral parser for the romanList extension: subtractive
+// notation handled, 0 returned for anything that isn't roman.
+function romanToInt(text)
+{
+  var values = { i: 1, v: 5, x: 10, l: 50, c: 100, d: 500, m: 1000 },
+      total = 0,
+      prev = 0;
+
+  text = text.toLowerCase();
+
+  for (var k = text.length - 1; k >= 0; k--)
+  {
+    var v = values[text[k]];
+    if (!v) return 0;
+
+    if (v < prev)
+      total -= v;
+    else
+    {
+      total += v;
+      prev = v;
+    }
+  }
+
+  return (total > 0 && total < 4000) ? total : 0;
+}
 
 function configureMermaid()
 {
@@ -4103,6 +4190,195 @@ document.addEventListener
     }
   }
 );
+
+// ── DOCS: FIND & REPLACE ──
+// A small panel over the editor: find (with live match count and optional
+// case sensitivity), step through matches, replace one or all. Replacements
+// are single undo steps via the shared textarea undo controller.
+
+function frPanel() { return document.getElementById('find-replace-panel'); }
+
+function openFindReplace()
+{
+  var panel = frPanel(),
+      editor = document.getElementById('editor');
+
+  if (!panel || !editor)
+    return;
+
+  panel.classList.add('open');
+
+  // A single-line selection in the editor becomes the initial query.
+  var findInp = document.getElementById('fr-find'),
+      selected = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+
+  if (selected && selected.indexOf('\n') === -1)
+    findInp.value = selected;
+
+  findInp.focus();
+  findInp.select();
+  frUpdateCount();
+}
+
+function closeFindReplace()
+{
+  var panel = frPanel();
+  if (panel) panel.classList.remove('open');
+  document.getElementById('editor').focus();
+}
+
+function toggleFindReplace()
+{
+  if (frPanel().classList.contains('open'))
+    closeFindReplace();
+  else
+    openFindReplace();
+}
+
+function frQuery()
+{
+  return  {
+            find: document.getElementById('fr-find').value,
+            cs: document.getElementById('fr-case').checked
+          };
+}
+
+function frCountMatches()
+{
+  var q = frQuery();
+  if (!q.find) return 0;
+
+  var editor = document.getElementById('editor'),
+      hay = q.cs ? editor.value : editor.value.toLowerCase(),
+      needle = q.cs ? q.find : q.find.toLowerCase(),
+      count = 0,
+      at = 0;
+
+  while ((at = hay.indexOf(needle, at)) !== -1)
+  {
+    count++;
+    at += needle.length;
+  }
+
+  return count;
+}
+
+function frUpdateCount()
+{
+  var q = frQuery();
+  document.getElementById('fr-count').textContent = q.find ? (frCountMatches() + ' found') : '';
+}
+
+// Selects a range and scrolls the textarea so it's visible (textareas don't
+// scroll to a programmatic selection on their own).
+function frSelectRange(editor, start, end)
+{
+  editor.focus();
+  editor.setSelectionRange(start, end);
+
+  var lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 20,
+      lineIdx = editor.value.slice(0, start).split('\n').length - 1;
+
+  editor.scrollTop = Math.max(0, lineIdx * lineHeight - editor.clientHeight / 2);
+}
+
+function frFindNext()
+{
+  var q = frQuery();
+  if (!q.find) return;
+
+  var editor = document.getElementById('editor'),
+      hay = q.cs ? editor.value : editor.value.toLowerCase(),
+      needle = q.cs ? q.find : q.find.toLowerCase(),
+      at = hay.indexOf(needle, editor.selectionEnd || 0);
+
+  if (at === -1)
+    at = hay.indexOf(needle); // wrap back to the top
+
+  if (at === -1)
+    return;
+
+  frSelectRange(editor, at, at + q.find.length);
+}
+
+function frReplaceOne()
+{
+  var q = frQuery();
+  if (!q.find) return;
+
+  var editor = document.getElementById('editor'),
+      selText = editor.value.slice(editor.selectionStart, editor.selectionEnd),
+      onMatch = q.cs ? (selText === q.find) : (selText.toLowerCase() === q.find.toLowerCase());
+
+  // First invocation just lands on the next match; the next one replaces it.
+  if (!onMatch)
+  {
+    frFindNext();
+    return;
+  }
+
+  var replaceWith = document.getElementById('fr-replace').value,
+      start = editor.selectionStart;
+
+  docTextUndo.forceSnapshot();
+  editor.value = editor.value.slice(0, start) + replaceWith + editor.value.slice(editor.selectionEnd);
+  editor.setSelectionRange(start + replaceWith.length, start + replaceWith.length);
+  onEditorChange();
+  frUpdateCount();
+  frFindNext();
+}
+
+function frReplaceAll()
+{
+  var q = frQuery();
+  if (!q.find || !frCountMatches()) return;
+
+  var editor = document.getElementById('editor'),
+      replaceWith = document.getElementById('fr-replace').value;
+
+  docTextUndo.forceSnapshot();
+
+  if (q.cs)
+    editor.value = editor.value.split(q.find).join(replaceWith);
+  else
+  {
+    var pattern = new RegExp(q.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    // Function replacement so '$' in the replacement text stays literal.
+    editor.value = editor.value.replace(pattern, function(){ return replaceWith; });
+  }
+
+  onEditorChange();
+  frUpdateCount();
+}
+
+function frKey(keyEvent)
+{
+  if (keyEvent.key === 'Enter')
+  {
+    keyEvent.preventDefault();
+    if (keyEvent.target.id === 'fr-replace') frReplaceOne();
+    else frFindNext();
+  }
+
+  if (keyEvent.key === 'Escape')
+    closeFindReplace();
+}
+
+// Ctrl/Cmd+F and Ctrl/Cmd+H inside the doc editor open the panel.
+(function()
+{
+  var editor = document.getElementById('editor');
+  if (!editor) return;
+
+  editor.addEventListener('keydown', function(e)
+  {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F' || e.key === 'h' || e.key === 'H'))
+    {
+      e.preventDefault();
+      openFindReplace();
+    }
+  });
+})();
 
 function wrapSelectedText(before, after)
 {
@@ -9509,9 +9785,12 @@ function substituteCellRefs(exprText)
 {
   return exprText.replace
   (
-    /(?<![A-Za-z])\$?([A-Z]{1,2})\$?(\d+)/g,
-    function(_, c, r)
+    /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?<![A-Za-z])\$?([A-Z]{1,2})\$?(\d+)/g,
+    function(match, c, r)
     {
+      if (c === undefined)
+        return match; // quoted string — ref-like text inside stays literal
+
       var ref = c + r,
           v = sheetData[ref];
 
@@ -10606,6 +10885,81 @@ function clearEvalCache()
   evalCellCache = {};
 }
 
+// Excel-style implicit intersection: @range picks the single value from the
+// range that lines up with the formula's own row (or column, for horizontal
+// ranges) — the "same line as me" operator. Fill =@A1:A9*@B1:B9 down beside
+// the data and each row multiplies its own pair; whole columns work too
+// (=@A:A*@B:B). A range that doesn't cross the formula's line is an error,
+// like Excel's #VALUE!.
+function substituteImplicitIntersection(exprText, selfRef)
+{
+  var self = parseName((selfRef || '').replace(/\$/g, ''));
+
+  return exprText.replace
+  (
+    /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|@\s*(\$?[A-Z]{1,2}\$?\d+\s*:\s*\$?[A-Z]{1,2}\$?\d+|\$?[A-Z]{1,2}\s*:\s*\$?[A-Z]{1,2}|\$?\d+\s*:\s*\$?\d+|\$?[A-Z]{1,2}\$?\d+)/g,
+    function(match, rangeText)
+    {
+      if (rangeText === undefined)
+        return match; // quoted string — leave alone
+
+      if (!self)
+        throw new Error('@ needs a host cell');
+
+      var clean = rangeText.replace(/[\s$]/g, ''),
+          m;
+
+      // @A5 on a plain ref is a no-op.
+      if ((m = clean.match(/^([A-Z]{1,2})(\d+)$/)))
+        return m[1] + m[2];
+
+      var selfCol = colIndex(self.col),
+          rowLo = null, rowHi = null,
+          colLo = null, colHi = null;
+
+      if ((m = clean.match(/^([A-Z]{1,2})(\d+):([A-Z]{1,2})(\d+)$/)))
+      {
+        colLo = Math.min(colIndex(m[1]), colIndex(m[3]));
+        colHi = Math.max(colIndex(m[1]), colIndex(m[3]));
+        rowLo = Math.min(+m[2], +m[4]);
+        rowHi = Math.max(+m[2], +m[4]);
+      }
+      else if ((m = clean.match(/^([A-Z]{1,2}):([A-Z]{1,2})$/)))
+      {
+        colLo = Math.min(colIndex(m[1]), colIndex(m[2]));
+        colHi = Math.max(colIndex(m[1]), colIndex(m[2]));
+      }
+      else if ((m = clean.match(/^(\d+):(\d+)$/)))
+      {
+        rowLo = Math.min(+m[1], +m[2]);
+        rowHi = Math.max(+m[1], +m[2]);
+      }
+      else
+        return match;
+
+      // Pick the row: a single-row range contributes its one row; a span (or
+      // an unbounded whole-column dimension) must contain the formula's row.
+      var row, col;
+
+      if (rowLo === null || (rowLo !== rowHi && self.row >= rowLo && self.row <= rowHi))
+        row = self.row;
+      else if (rowLo === rowHi)
+        row = rowLo;
+      else
+        throw new Error('@' + rangeText + ' does not reach row ' + self.row);
+
+      if (colLo === null || (colLo !== colHi && selfCol >= colLo && selfCol <= colHi))
+        col = selfCol;
+      else if (colLo === colHi)
+        col = colLo;
+      else
+        throw new Error('@' + rangeText + ' does not reach column ' + self.col);
+
+      return colName(col) + row;
+    }
+  );
+}
+
 function evalCell(ref, val)
 {
   if (!val || !val.startsWith('='))
@@ -10624,7 +10978,7 @@ function evalCell(ref, val)
 
   try
   {
-    var expr = substitutePageRefs(val.slice(1)),
+    var expr = substituteImplicitIntersection(substitutePageRefs(val.slice(1)), ref),
         previous,
         iterations = 25;
 
@@ -12241,7 +12595,9 @@ function renderFunctionHelp()
                 'Start a cell with <code>=</code> to write a formula. Reference cells like '+
                 '<code>A1</code> or ranges like <code>A1:B3</code>. Whole columns and rows '+
                 'work too: <code>A:A</code> is everything in column A, <code>4:4</code> '+
-                'everything in row 4. While editing a formula, '+
+                'everything in row 4. Prefix a range with <code>@</code> to take only the '+
+                'value on the formula\'s own line — fill <code>=@A1:A9*@B1:B9</code> down '+
+                'beside your data to operate row by row. While editing a formula, '+
                 'click or drag cells on the grid to insert their reference at the cursor. '+
                 'Functions can be nested, e.g. <code>=ROUND(SUM(A1:A4),1)</code>. Prefix a '+
                 'column or row with <code>$</code> (e.g. <code>$A$1</code>, <code>A$1</code>, '+
