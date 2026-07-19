@@ -10349,15 +10349,25 @@ function averageifRange(argText)
   return total / count;
 }
 
-// LARGE/SMALL(range, k): the k-th largest/smallest value (1-based).
+// LARGE/SMALL(values..., k): the k-th largest/smallest value (1-based). The
+// LAST argument is k and everything before it supplies values — so both
+// LARGE(A1:A9, 2) and an @-expanded LARGE(@A1:A5*@B1:B5, 2) work.
 function largeSmallRange(argText, wantLargest)
 {
   var args = splitTopLevelArgs(argText),
-      vals = aggregateArgValues(args[0]).slice().sort
+      k = 1,
+      valueArgs = args;
+
+  if (args.length > 1)
+  {
+    k = resolveValue(args[args.length - 1]);
+    valueArgs = args.slice(0, -1);
+  }
+
+  var vals = aggregateArgValues(valueArgs.join(',')).slice().sort
       (
         function(a, b) { return wantLargest ? b - a : a - b; }
-      ),
-      k = args[1] !== undefined ? resolveValue(args[1]) : 1;
+      );
 
   if (k < 1 || k > vals.length)
     throw new Error('k out of range');
@@ -10885,6 +10895,143 @@ function clearEvalCache()
   evalCellCache = {};
 }
 
+// ── @ RANGES (elementwise / line-per-line operations) ──
+// Two complementary behaviors, matching how Excel treats arrays vs implicit
+// intersection:
+//
+//  1. Inside an aggregate function, an argument mixing @ranges with
+//     operators is expanded one element per line and handed to the function
+//     as a plain value list: =SUM(@I18:I22*@J18:J22) becomes
+//     SUM(I18*J18, I19*J19, …) — a single SUMPRODUCT-style result.
+//  2. Anywhere else, @range picks the one value on the formula's own
+//     row/column, so =@A1:A9*@B1:B9 filled down computes each line's pair.
+
+var AT_EXPANDING_FUNCTIONS = {
+  SUM: 1, AVG: 1, AVERAGE: 1, MEAN: 1, MAX: 1, MIN: 1, MEDIAN: 1,
+  PRODUCT: 1, STDEV: 1, VAR: 1, COUNT: 1, COUNTA: 1, LARGE: 1, SMALL: 1
+};
+
+// Matches quoted strings (passed through) or an @range (captured).
+var AT_RANGE_RE = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|@\s*(\$?[A-Z]{1,2}\$?\d+\s*:\s*\$?[A-Z]{1,2}\$?\d+|\$?[A-Z]{1,2}\s*:\s*\$?[A-Z]{1,2}|\$?\d+\s*:\s*\$?\d+)/g;
+
+// Rewrites one paren/comma-free argument segment ("@A1:A3*@B1:B3+2") into a
+// comma-separated element list ("A1*B1+2,A2*B2+2,A3*B3+2"). Scalars repeat
+// on every line; all @ranges in the segment must have the same size.
+function expandAtSegment(segment)
+{
+  var ranges = [],
+      m;
+
+  AT_RANGE_RE.lastIndex = 0;
+  while ((m = AT_RANGE_RE.exec(segment)))
+    if (m[1] !== undefined) ranges.push(m[1]);
+
+  if (!ranges.length)
+    return segment; // only @A5-style single refs — implicit intersection's job
+
+  var refLists = ranges.map(function(r){ return getRangeRefs(r.replace(/[\s$]/g, '')); }),
+      len = refLists[0].length;
+
+  refLists.forEach(function(list)
+  {
+    if (list.length !== len)
+      throw new Error('@ ranges in one expression must be the same size');
+  });
+
+  if (!len)
+    throw new Error('@ range is empty');
+
+  var elements = [];
+
+  for (var k = 0; k < len; k++)
+  {
+    var idx = 0;
+    elements.push(segment.replace(AT_RANGE_RE, function(match, r)
+    {
+      return r === undefined ? match : refLists[idx++][k];
+    }));
+  }
+
+  return elements.join(',');
+}
+
+// Walks the formula tracking which function call each piece sits inside;
+// @-bearing segments whose innermost enclosing call is an aggregate get
+// elementwise expansion. Everything else is left for implicit intersection.
+function expandArrayOps(expr)
+{
+  if (expr.indexOf('@') === -1)
+    return expr;
+
+  var result = '',
+      segment = '',
+      stack = [],
+      i = 0;
+
+  function flush()
+  {
+    var context = stack.length ? stack[stack.length - 1] : null;
+
+    if (context && context.agg && segment.indexOf('@') !== -1)
+      result += expandAtSegment(segment);
+    else
+      result += segment;
+
+    segment = '';
+  }
+
+  while (i < expr.length)
+  {
+    var ch = expr.charAt(i);
+
+    // Quoted strings ride along inside the segment untouched (and their
+    // commas/parens don't count as delimiters).
+    if (ch === '"' || ch === "'")
+    {
+      var j = i + 1;
+      while (j < expr.length && expr.charAt(j) !== ch)
+        j += (expr.charAt(j) === '\\') ? 2 : 1;
+      segment += expr.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+
+    if (ch === '(')
+    {
+      var nameMatch = /([A-Za-z]+)\s*$/.exec(segment),
+          fnName = nameMatch ? nameMatch[1].toUpperCase() : null;
+      flush();
+      result += '(';
+      stack.push({ agg: !!(fnName && AT_EXPANDING_FUNCTIONS[fnName]) });
+      i++;
+      continue;
+    }
+
+    if (ch === ')')
+    {
+      flush();
+      result += ')';
+      stack.pop();
+      i++;
+      continue;
+    }
+
+    if (ch === ',')
+    {
+      flush();
+      result += ',';
+      i++;
+      continue;
+    }
+
+    segment += ch;
+    i++;
+  }
+
+  flush();
+  return result;
+}
+
 // Excel-style implicit intersection: @range picks the single value from the
 // range that lines up with the formula's own row (or column, for horizontal
 // ranges) — the "same line as me" operator. Fill =@A1:A9*@B1:B9 down beside
@@ -10978,7 +11125,7 @@ function evalCell(ref, val)
 
   try
   {
-    var expr = substituteImplicitIntersection(substitutePageRefs(val.slice(1)), ref),
+    var expr = substituteImplicitIntersection(expandArrayOps(substitutePageRefs(val.slice(1))), ref),
         previous,
         iterations = 25;
 
@@ -12595,9 +12742,12 @@ function renderFunctionHelp()
                 'Start a cell with <code>=</code> to write a formula. Reference cells like '+
                 '<code>A1</code> or ranges like <code>A1:B3</code>. Whole columns and rows '+
                 'work too: <code>A:A</code> is everything in column A, <code>4:4</code> '+
-                'everything in row 4. Prefix a range with <code>@</code> to take only the '+
-                'value on the formula\'s own line — fill <code>=@A1:A9*@B1:B9</code> down '+
-                'beside your data to operate row by row. While editing a formula, '+
+                'everything in row 4. Prefix ranges with <code>@</code> for line-by-line math: '+
+                'inside an aggregate it combines the ranges element by element and returns one '+
+                'result — <code>=SUM(@A1:A9*@B1:B9)</code> sums each row\'s product, like '+
+                'SUMPRODUCT. Outside a function, <code>@</code> takes the value on the '+
+                'formula\'s own line, so <code>=@A1:A9*@B1:B9</code> filled down computes '+
+                'row by row. While editing a formula, '+
                 'click or drag cells on the grid to insert their reference at the cursor. '+
                 'Functions can be nested, e.g. <code>=ROUND(SUM(A1:A4),1)</code>. Prefix a '+
                 'column or row with <code>$</code> (e.g. <code>$A$1</code>, <code>A$1</code>, '+
