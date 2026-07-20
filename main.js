@@ -515,6 +515,10 @@ function fileRowHtml(id, f, depth)
         indent = depth ? (' style="padding-left:' + (12 + depth * 16) + 'px;"') : '',
         safeId = escAttr(id);
 
+  const tagChips = fileTagsOf(f).map(function(t){
+    return '<span class="file-tag" onclick="event.stopPropagation();sidebarTagFilter(\'' + escAttr(t) + '\')">#' + escHtml(t) + '</span>';
+  }).join('');
+
   return  '<div class="file-item ' + (active?'active':'') + '"' + indent + ' data-id="' + escHtml(id) + '"' +
             ' draggable="true" ondragstart="handleDragStart(event,\'' + safeId + '\')" ondragend="handleDragEnd(event)"' +
             ' onclick="openFile(\'' + safeId + '\')" oncontextmenu="openContextMenu(event,\'file\',\'' + safeId + '\')">' +
@@ -526,7 +530,7 @@ function fileRowHtml(id, f, depth)
                 escHtml(f.name) +
               '</div>'+
               '<div class="file-meta">' +
-                date +
+                date + tagChips +
               '</div>'+
             '</div>'+
             '<span class="file-del" onclick="deleteFile(event,\'' + safeId + '\')">'+
@@ -568,13 +572,28 @@ function renderFileList()
 
   var _searchQ = sidebarSearch.trim().toLowerCase();
 
+  // "#tag" filters by tag: file-level tags on the JSON data apps, and inline
+  // #hashtags in Documents (which carry them in the markdown itself).
+  var _tagQ = null;
+  if (_searchQ.charAt(0) === '#')
+  {
+    _tagQ = _searchQ.slice(1).trim();
+    _searchQ = '';
+  }
+
   const filesOfType = Object.entries(files).filter(function(entry)
   {
     var f = entry[1];
     if (entry[0] === SHARED_TMP_ID) return false; // shared files live in their own sidebar section
     if (f.type !== currentAppType) return false;
+    if (_tagQ)
+    {
+      if (fileTagsOf(f).some(function(t){ return t.toLowerCase() === _tagQ; })) return true;
+      return !!(f.content && f.content.toLowerCase().indexOf('#' + _tagQ) !== -1);
+    }
     if (!_searchQ) return true;
     if (f.name.toLowerCase().indexOf(_searchQ) !== -1) return true;
+    if (fileTagsOf(f).some(function(t){ return t.toLowerCase().indexOf(_searchQ) !== -1; })) return true;
     if (f.content && f.content.toLowerCase().indexOf(_searchQ) !== -1) return true;
     return false;
   });
@@ -658,6 +677,15 @@ function filterByTag(tag)
   renderFileList();
 }
 
+// Tag chip on a sidebar file row: filter the current app's list by that tag.
+function sidebarTagFilter(tag)
+{
+  sidebarSearch = '#' + tag;
+  var inp = document.getElementById('sidebar-search');
+  if (inp) inp.value = sidebarSearch;
+  onGlobalSearch(sidebarSearch);
+}
+
 // ── GLOBAL SEARCH ──────────────────────────────────────────
 
 var globalSearchActive  = false;
@@ -673,8 +701,8 @@ function extractSearchableText(id)
   {
     try
     {
-      var bd = JSON.parse(c), bparts = [];
-      (bd.beasts || []).forEach(function(b) { bparts.push(b.name, b.category, b.habitat, b.description); if (b.abilities) bparts = bparts.concat(b.abilities); });
+      var bd = JSON.parse(c), bparts = (bd.tags || []).slice();
+      (bd.beasts || []).forEach(function(b) { bparts.push(b.name, b.category, b.habitat, b.description); if (b.abilities) bparts = bparts.concat(b.abilities); if (b.tags) bparts = bparts.concat(b.tags); });
       return bparts.filter(Boolean).join(' ');
     }
     catch(e) { return ''; }
@@ -684,9 +712,9 @@ function extractSearchableText(id)
   {
     try
     {
-      var d = JSON.parse(c), parts = [];
-      (d.entries || []).forEach(function(e) { parts.push(e.word, e.definition, e.example, e.language); });
-      (d.roots   || []).forEach(function(r) { parts.push(r.form, r.meaning); if (r.examples) parts = parts.concat(r.examples); });
+      var d = JSON.parse(c), parts = (d.tags || []).slice();
+      (d.entries || []).forEach(function(e) { parts.push(e.word, e.definition, e.example, e.language); if (e.tags) parts = parts.concat(e.tags); });
+      (d.roots   || []).forEach(function(r) { parts.push(r.form, r.meaning); if (r.examples) parts = parts.concat(r.examples); if (r.tags) parts = parts.concat(r.tags); });
       return parts.filter(Boolean).join(' ');
     }
     catch(e) { return c; }
@@ -696,10 +724,10 @@ function extractSearchableText(id)
   {
     try
     {
-      var d = JSON.parse(c), parts = [];
-      (d.months   || []).forEach(function(m) { parts.push(m.name, m.season, m.description); });
+      var d = JSON.parse(c), parts = (d.tags || []).slice();
+      (d.months   || []).forEach(function(m) { parts.push(m.name, m.season, m.description); if (m.tags) parts = parts.concat(m.tags); });
       (d.seasons  || []).forEach(function(s) { parts.push(s.name, s.description); });
-      (d.holidays || []).forEach(function(h) { parts.push(h.name, h.description); });
+      (d.holidays || []).forEach(function(h) { parts.push(h.name, h.description); if (h.tags) parts = parts.concat(h.tags); });
       return parts.filter(Boolean).join(' ');
     }
     catch(e) { return c; }
@@ -709,10 +737,10 @@ function extractSearchableText(id)
   {
     try
     {
-      var d = JSON.parse(c), parts = [];
-      (d.currencies || []).forEach(function(x) { parts.push(x.name, x.code, x.symbol, x.region, x.description); });
-      (d.goods      || []).forEach(function(x) { parts.push(x.name, x.category, x.description, x.origin); });
-      (d.regions    || []).forEach(function(x) { parts.push(x.name, x.currency, x.status, x.notes); });
+      var d = JSON.parse(c), parts = (d.tags || []).slice();
+      (d.currencies || []).forEach(function(x) { parts.push(x.name, x.code, x.symbol, x.region, x.description); if (x.tags) parts = parts.concat(x.tags); });
+      (d.tradeGoods || []).forEach(function(x) { parts.push(x.name, x.category, x.description, x.origin); if (x.tags) parts = parts.concat(x.tags); });
+      (d.regions    || []).forEach(function(x) { parts.push(x.name, x.economicStatus, x.notes); if (x.tags) parts = parts.concat(x.tags); });
       return parts.filter(Boolean).join(' ');
     }
     catch(e) { return c; }
@@ -813,33 +841,50 @@ function hideGlobalSearch()
   renderFileList();
 }
 
+// Work-folder mode: background-load any unread files, then call `done` so
+// the caller can re-run its filter over the full content set.
+function scheduleUnloadedContentLoad(done)
+{
+  if (!workFolderRoot) return;
+  globalSearchLoadTmr = setTimeout(async function()
+  {
+    var unloaded = Object.keys(files).filter(function(id) { return files[id] && !files[id].contentLoaded; });
+    if (!unloaded.length) return;
+    await Promise.all(unloaded.map(async function(id)
+    {
+      try
+      {
+        var _r = await Platform.readWorkFile(workFolderRoot, id);
+        if (files[id]) { files[id].content = _r; files[id].contentLoaded = true; }
+      }
+      catch(err) {}
+    }));
+    done();
+  }, 150);
+}
+
 function onGlobalSearch(value)
 {
   clearTimeout(globalSearchLoadTmr);
   var q = value.trim();
   if (!q) { hideGlobalSearch(); return; }
 
+  // '#tag' queries filter the sidebar file list in place (renderFileList
+  // understands them) instead of opening the global results panel.
+  if (q.charAt(0) === '#')
+  {
+    globalSearchActive = false;
+    document.getElementById('global-search-results').style.display    = 'none';
+    document.getElementById('file-list').style.display                = '';
+    document.getElementById('sidebar-search-clear').style.display     = '';
+    renderFileList();
+    scheduleUnloadedContentLoad(function(){ if (sidebarSearch.trim() === q) renderFileList(); });
+    return;
+  }
+
   runGlobalSearch(q); // immediate pass — searches already-loaded content
 
-  // Work-folder mode: background-load any unread files, then re-run
-  if (workFolderRoot)
-  {
-    globalSearchLoadTmr = setTimeout(async function()
-    {
-      var unloaded = Object.keys(files).filter(function(id) { return files[id] && !files[id].contentLoaded; });
-      if (!unloaded.length) return;
-      await Promise.all(unloaded.map(async function(id)
-      {
-        try
-        {
-          var _r = await Platform.readWorkFile(workFolderRoot, id);
-          if (files[id]) { files[id].content = _r; files[id].contentLoaded = true; }
-        }
-        catch(err) {}
-      }));
-      if (sidebarSearch.trim() === q) runGlobalSearch(q); // re-render with full content
-    }, 150);
-  }
+  scheduleUnloadedContentLoad(function(){ if (sidebarSearch.trim() === q) runGlobalSearch(q); }); // re-render with full content
 }
 
 function clearGlobalSearch()
@@ -2235,6 +2280,7 @@ async function openFile(id)
     loadSheetFile(file);
 
   updateCommentsUI();
+  updateLiveSync();
 
   // Fire-and-forget: update the shared backlinks index whenever a file is opened
   updateBacklinksForFile(id);
@@ -2442,10 +2488,12 @@ async function persistFileEntry(id)
     {
       try
       {
+        var sharedContent = files[id].content || '';
         if (sharedCtx.link)
-          await Platform.writeLinkFile(sharedCtx.link, sharedCtx.subPath, files[id].content || '');
+          await Platform.writeLinkFile(sharedCtx.link, sharedCtx.subPath, sharedContent);
         else
-          await Platform.writeSharedFile(sharedCtx.shareId, sharedCtx.subPath, files[id].content || '');
+          await Platform.writeSharedFile(sharedCtx.shareId, sharedCtx.subPath, sharedContent);
+        if (id === liveSyncFileId) { liveSyncBase = sharedContent; liveSyncServerHash = null; }
       }
       catch(e) { console.warn('Shared write error', e); }
     }
@@ -2495,6 +2543,7 @@ async function persistFileEntry(id)
   try
   {
     await Platform.writeWorkFile(workFolderRoot, activeId, files[activeId].content || '');
+    if (activeId === liveSyncFileId) { liveSyncBase = files[activeId].content || ''; liveSyncServerHash = null; }
     await updateBacklinksForFile(activeId);
   }
   catch(e)
@@ -2921,11 +2970,87 @@ function genId()
   return 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
 }
 
+// ── TAGS & FACET FILTERS (shared by the JSON data apps) ──
+// Every Glossary / Bestiary / Calendar / Economy item can carry free-form
+// tags, and each list view gets two facet dropdowns: one for the item's
+// natural "type" field (language, category, season, status…) and one for
+// tags. The dropdowns are rebuilt from the data on every render so they
+// always offer exactly the values that exist.
+
+var DATA_FILE_TYPES = { glossary: 1, bestiary: 1, calendar: 1, economy: 1 };
+
+function parseTagsInput(value)
+{
+  return String(value || '').split(',').map(function(t){ return t.trim(); }).filter(Boolean);
+}
+
+function tagsField(inputId, tags)
+{
+  return '<label class="field-label" style="margin-top:8px">Tags <span style="color:var(--text3);font-weight:400">(comma separated)</span>' +
+         '<input class="modal-input" id="' + inputId + '" value="' + escAttr((tags || []).join(', ')) + '" placeholder="e.g. draft, important…"></label>';
+}
+
+// Clickable #tag chips on an item card; clicking one sets that app's tag facet.
+function tagChipsHtml(tags, filterFnName)
+{
+  if (!tags || !tags.length) return '';
+  return '<div class="item-tags">' + tags.map(function(t){
+    return '<span class="item-tag" onclick="event.stopPropagation();' + filterFnName + '(\'' + escAttr(t) + '\')">#' + escHtml(t) + '</span>';
+  }).join('') + '</div>';
+}
+
+function collectItemTags(items)
+{
+  var out = [];
+  (items || []).forEach(function(it){
+    (it.tags || []).forEach(function(t){ if (out.indexOf(t) === -1) out.push(t); });
+  });
+  return out;
+}
+
+// Rebuilds a facet <select> from the values present in the data, keeping the
+// current selection. Returns the effective value: '' when the previously
+// selected value no longer exists (so a stale filter can't hide everything).
+function fillFacetSelect(selId, values, current, allLabel)
+{
+  var sel = document.getElementById(selId);
+  if (!sel) return current || '';
+  var uniq = [];
+  (values || []).forEach(function(v){ if (v && uniq.indexOf(v) === -1) uniq.push(v); });
+  uniq.sort(function(a, b){ return String(a).localeCompare(String(b)); });
+  if (current && uniq.indexOf(current) === -1) current = '';
+  sel.innerHTML = '<option value="">' + escHtml(allLabel) + '</option>' +
+    uniq.map(function(v){
+      return '<option value="' + escAttr(v) + '"' + (v === current ? ' selected' : '') + '>' + escHtml(v) + '</option>';
+    }).join('');
+  return current;
+}
+
+function itemMatchesFacets(item, typeVal, typeKey, tagVal)
+{
+  if (typeVal && String(item[typeKey] || '') !== typeVal) return false;
+  if (tagVal && (item.tags || []).indexOf(tagVal) === -1) return false;
+  return true;
+}
+
+// File-level tags for the data apps live in the JSON root ({ tags: [...] })
+// and are cached on the sidebar entry for filtering without a reparse.
+function fileTagsOf(f)
+{
+  if (!f || !DATA_FILE_TYPES[f.type]) return [];
+  if (f.fileTags) return f.fileTags;
+  if (f.content === undefined) return [];
+  try { f.fileTags = JSON.parse(f.content || '{}').tags || []; }
+  catch(e) { f.fileTags = []; }
+  return f.fileTags;
+}
+
 // ── GLOSSARY ──
 
 var glsData  = null;
 var glsTab   = 'words';
 var glsQuery = '';
+var glsFilter = { words: { type: '', tag: '' }, roots: { type: '', tag: '' } };
 
 function loadGlossaryFile(file)
 {
@@ -2936,7 +3061,10 @@ function loadGlossaryFile(file)
   // The file's own (user-given) name wins over the embedded title, so a
   // canned default inside the JSON can never rename the file on save.
   document.getElementById('glossary-title-input').value = file.name || glsData.name || '';
+  var ft = document.getElementById('gls-file-tags');
+  if (ft) ft.value = (glsData.tags || []).join(', ');
   glsQuery = '';
+  glsFilter = { words: { type: '', tag: '' }, roots: { type: '', tag: '' } };
   document.getElementById('gls-search').value = '';
   switchGlossaryTab('words');
   renderGlossary();
@@ -2946,8 +3074,11 @@ function saveGlossaryData()
 {
   if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'glossary') return;
   glsData.name = document.getElementById('glossary-title-input').value.trim() || glsData.name || 'Glossary';
+  var ft = document.getElementById('gls-file-tags');
+  if (ft) glsData.tags = parseTagsInput(ft.value);
   files[currentFileId].name     = glsData.name;
   files[currentFileId].content  = JSON.stringify(glsData, null, 2);
+  files[currentFileId].fileTags = glsData.tags || [];
   files[currentFileId].modified = Date.now();
   scheduleSave();
   renderFileList();
@@ -2966,6 +3097,10 @@ function switchGlossaryTab(tab)
 }
 
 function onGlossarySearch(q) { glsQuery = q; renderGlossary(); }
+function onGlsFilterType(v)  { glsFilter[glsTab].type = v; renderGlossary(); }
+function onGlsFilterTag(v)   { glsFilter[glsTab].tag  = v; renderGlossary(); }
+function glsFilterByTag(t)   { glsFilter[glsTab].tag  = t; renderGlossary(); }
+function onGlossaryFileTagsChange() { saveGlossaryData(); }
 
 function renderGlossary()
 {
@@ -2985,8 +3120,14 @@ var ROOT_TYPE_COLORS = { prefix:'#3498db', suffix:'#e67e22', root:'#2ecc71', inf
 
 function renderGlossaryWords()
 {
-  var q = glsQuery.toLowerCase();
-  var entries = (glsData.entries || [])
+  var q   = glsQuery.toLowerCase();
+  var all = glsData.entries || [];
+  var flt = glsFilter.words;
+  flt.type = fillFacetSelect('gls-filter-type', all.map(function(e){ return e.language; }), flt.type, 'All languages');
+  flt.tag  = fillFacetSelect('gls-filter-tag', collectItemTags(all), flt.tag, 'All tags');
+
+  var entries = all
+    .filter(function(e){ return itemMatchesFacets(e, flt.type, 'language', flt.tag); })
     .filter(function(e){
       return !q || (e.word||'').toLowerCase().includes(q) ||
              (e.definition||'').toLowerCase().includes(q) ||
@@ -3016,6 +3157,7 @@ function renderGlossaryWords()
           '<div class="gls-entry-right">' +
             '<div class="gls-entry-def">' + escHtml(e.definition||'') + '</div>' +
             (e.example ? '<div class="gls-entry-ex">"' + escHtml(e.example) + '"</div>' : '') +
+            tagChipsHtml(e.tags, 'glsFilterByTag') +
           '</div>' +
           '<button class="gls-card-del" onclick="deleteGlossaryEntry(event,\'' + e.id + '\')">×</button>' +
         '</div>';
@@ -3026,11 +3168,18 @@ function renderGlossaryWords()
 
 function renderGlossaryRoots()
 {
-  var q = glsQuery.toLowerCase();
-  var rows = (glsData.roots || [])
+  var q   = glsQuery.toLowerCase();
+  var all = glsData.roots || [];
+  var flt = glsFilter.roots;
+  flt.type = fillFacetSelect('gls-filter-type', all.map(function(r){ return r.type; }), flt.type, 'All types');
+  flt.tag  = fillFacetSelect('gls-filter-tag', collectItemTags(all), flt.tag, 'All tags');
+
+  var rows = all
+    .filter(function(r){ return itemMatchesFacets(r, flt.type, 'type', flt.tag); })
     .filter(function(r){
       return !q || (r.form||'').toLowerCase().includes(q) ||
-             (r.meaning||'').toLowerCase().includes(q);
+             (r.meaning||'').toLowerCase().includes(q) ||
+             (r.tags||[]).some(function(t){ return t.toLowerCase().includes(q); });
     })
     .sort(function(a, b){ return (a.form||'').localeCompare(b.form||''); });
 
@@ -3043,6 +3192,7 @@ function renderGlossaryRoots()
       '<span class="gls-root-type" style="background:' + tc + '22;color:' + tc + ';border-color:' + tc + '55">' + escHtml(r.type||'root') + '</span>' +
       '<div class="gls-root-meaning">' + escHtml(r.meaning||'') + '</div>' +
       (exs ? '<div class="gls-root-examples">' + exs + '</div>' : '') +
+      tagChipsHtml(r.tags, 'glsFilterByTag') +
       '<button class="gls-card-del" onclick="deleteGlossaryRoot(event,\'' + r.id + '\')">×</button>' +
     '</div>';
   }).join('');
@@ -3064,7 +3214,8 @@ function openGlossaryEntryModal(id)
       '<label class="field-label">Language<input class="modal-input" id="gef-lang" value="' + escAttr((e||{}).language||'') + '" placeholder="Language or dialect"></label>' +
     '</div>' +
     '<label class="field-label" style="margin-top:8px">Definition<textarea class="modal-input" id="gef-def" rows="2" placeholder="Meaning…">' + escHtml((e||{}).definition||'') + '</textarea></label>' +
-    '<label class="field-label" style="margin-top:8px">Example<textarea class="modal-input" id="gef-ex" rows="2" placeholder="Usage example…">' + escHtml((e||{}).example||'') + '</textarea></label>';
+    '<label class="field-label" style="margin-top:8px">Example<textarea class="modal-input" id="gef-ex" rows="2" placeholder="Usage example…">' + escHtml((e||{}).example||'') + '</textarea></label>' +
+    tagsField('gef-tags', (e||{}).tags);
 
   openDataModal(id ? 'Edit entry' : 'Add entry', f, function()
   {
@@ -3073,7 +3224,8 @@ function openGlossaryEntryModal(id)
       word:       document.getElementById('gef-word').value.trim(),
       language:   document.getElementById('gef-lang').value.trim(),
       definition: document.getElementById('gef-def').value.trim(),
-      example:    document.getElementById('gef-ex').value.trim()
+      example:    document.getElementById('gef-ex').value.trim(),
+      tags:       parseTagsInput(document.getElementById('gef-tags').value)
     };
     if (!entry.word) return;
     if (id)
@@ -3101,7 +3253,8 @@ function openGlossaryRootModal(id)
       '</select></label>' +
     '</div>' +
     '<label class="field-label" style="margin-top:8px">Meaning<input class="modal-input" id="grf-mean" value="' + escAttr((r||{}).meaning||'') + '" placeholder="What it means…"></label>' +
-    '<label class="field-label" style="margin-top:8px">Examples <span style="color:var(--text3);font-weight:400">(comma separated)</span><input class="modal-input" id="grf-ex" value="' + escAttr(((r||{}).examples||[]).join(', ')) + '"></label>';
+    '<label class="field-label" style="margin-top:8px">Examples <span style="color:var(--text3);font-weight:400">(comma separated)</span><input class="modal-input" id="grf-ex" value="' + escAttr(((r||{}).examples||[]).join(', ')) + '"></label>' +
+    tagsField('grf-tags', (r||{}).tags);
 
   openDataModal(id ? 'Edit root / affix' : 'Add root / affix', f, function()
   {
@@ -3110,7 +3263,8 @@ function openGlossaryRootModal(id)
       form:     document.getElementById('grf-form').value.trim(),
       type:     document.getElementById('grf-type').value,
       meaning:  document.getElementById('grf-mean').value.trim(),
-      examples: document.getElementById('grf-ex').value.split(',').map(function(t){ return t.trim(); }).filter(Boolean)
+      examples: document.getElementById('grf-ex').value.split(',').map(function(t){ return t.trim(); }).filter(Boolean),
+      tags:     parseTagsInput(document.getElementById('grf-tags').value)
     };
     if (!root.form) return;
     if (id)
@@ -3141,6 +3295,7 @@ function deleteGlossaryRoot(e, id)
 
 var bstData  = null;
 var bstQuery = '';
+var bstFilter = { type: '', tag: '' };
 
 var BST_DANGER_LABELS = ['Harmless', 'Low', 'Moderate', 'High', 'Deadly'];
 var BST_DANGER_COLORS = ['#2ecc71', '#a3c94a', '#f1c40f', '#e67e22', '#e74c3c'];
@@ -3151,7 +3306,10 @@ function loadBestiaryFile(file)
   catch(e) { bstData = {}; }
   if (!bstData.beasts) bstData.beasts = [];
   document.getElementById('bestiary-title-input').value = file.name || bstData.name || '';
-  bstQuery = '';
+  var ft = document.getElementById('bst-file-tags');
+  if (ft) ft.value = (bstData.tags || []).join(', ');
+  bstQuery  = '';
+  bstFilter = { type: '', tag: '' };
   document.getElementById('bst-search').value = '';
   renderBestiary();
 }
@@ -3160,16 +3318,23 @@ function saveBestiaryData()
 {
   if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'bestiary') return;
   bstData.name = document.getElementById('bestiary-title-input').value.trim() || bstData.name || 'Bestiary';
+  var ft = document.getElementById('bst-file-tags');
+  if (ft) bstData.tags = parseTagsInput(ft.value);
   files[currentFileId].name     = bstData.name;
   files[currentFileId].content  = JSON.stringify(bstData, null, 2);
+  files[currentFileId].fileTags = bstData.tags || [];
   files[currentFileId].modified = Date.now();
   scheduleSave();
   renderFileList();
 }
 
 function onBestiaryTitleChange() { saveBestiaryData(); }
+function onBestiaryFileTagsChange() { saveBestiaryData(); }
 
 function onBestiarySearch(q) { bstQuery = q; renderBestiary(); }
+function onBstFilterType(v) { bstFilter.type = v; renderBestiary(); }
+function onBstFilterTag(v)  { bstFilter.tag  = v; renderBestiary(); }
+function bstFilterByTag(t)  { bstFilter.tag  = t; renderBestiary(); }
 
 function bstDangerBadge(level)
 {
@@ -3181,13 +3346,19 @@ function bstDangerBadge(level)
 
 function renderBestiary()
 {
-  var q = bstQuery.toLowerCase();
-  var beasts = (bstData.beasts || [])
+  var q   = bstQuery.toLowerCase();
+  var all = bstData.beasts || [];
+  bstFilter.type = fillFacetSelect('bst-filter-type', all.map(function(b){ return b.category; }), bstFilter.type, 'All categories');
+  bstFilter.tag  = fillFacetSelect('bst-filter-tag', collectItemTags(all), bstFilter.tag, 'All tags');
+
+  var beasts = all
+    .filter(function(b){ return itemMatchesFacets(b, bstFilter.type, 'category', bstFilter.tag); })
     .filter(function(b){
       return !q || (b.name||'').toLowerCase().includes(q) ||
              (b.category||'').toLowerCase().includes(q) ||
              (b.habitat||'').toLowerCase().includes(q) ||
              (b.description||'').toLowerCase().includes(q) ||
+             (b.tags||[]).some(function(t){ return t.toLowerCase().includes(q); }) ||
              (b.abilities||[]).some(function(a){ return a.toLowerCase().includes(q); });
     })
     .sort(function(a, b){ return (a.name||'').localeCompare(b.name||''); });
@@ -3215,6 +3386,7 @@ function renderBestiary()
           '</div>' +
           (b.description ? '<div class="bst-desc">' + escHtml(b.description) + '</div>' : '') +
           (abilities ? '<div class="bst-abilities">' + abilities + '</div>' : '') +
+          tagChipsHtml(b.tags, 'bstFilterByTag') +
           '<button class="gls-card-del" onclick="deleteBeast(event,\'' + b.id + '\')">×</button>' +
         '</div>';
       }).join('') +
@@ -3241,7 +3413,8 @@ function openBeastModal(id)
       '<label class="field-label">Habitat<input class="modal-input" id="bef-habitat" value="' + escAttr((b||{}).habitat||'') + '" placeholder="Where it lives…"></label>' +
     '</div>' +
     '<label class="field-label" style="margin-top:8px">Description<textarea class="modal-input" id="bef-desc" rows="4" placeholder="Appearance, behaviour, lore…">' + escHtml((b||{}).description||'') + '</textarea></label>' +
-    '<label class="field-label" style="margin-top:8px">Abilities <span style="color:var(--text3);font-weight:400">(comma separated)</span><input class="modal-input" id="bef-abilities" value="' + escAttr(((b||{}).abilities||[]).join(', ')) + '" placeholder="e.g. Fire breath, Flight…"></label>';
+    '<label class="field-label" style="margin-top:8px">Abilities <span style="color:var(--text3);font-weight:400">(comma separated)</span><input class="modal-input" id="bef-abilities" value="' + escAttr(((b||{}).abilities||[]).join(', ')) + '" placeholder="e.g. Fire breath, Flight…"></label>' +
+    tagsField('bef-tags', (b||{}).tags);
 
   openDataModal(id ? 'Edit beast' : 'Add beast', f, function()
   {
@@ -3252,7 +3425,8 @@ function openBeastModal(id)
       danger:      parseInt(document.getElementById('bef-danger').value, 10) || 1,
       habitat:     document.getElementById('bef-habitat').value.trim(),
       description: document.getElementById('bef-desc').value.trim(),
-      abilities:   document.getElementById('bef-abilities').value.split(',').map(function(t){ return t.trim(); }).filter(Boolean)
+      abilities:   document.getElementById('bef-abilities').value.split(',').map(function(t){ return t.trim(); }).filter(Boolean),
+      tags:        parseTagsInput(document.getElementById('bef-tags').value)
     };
     if (!beast.name) return;
     if (id)
@@ -3276,9 +3450,11 @@ function deleteBeast(e, id)
 
 var calData = null;
 var calTab  = 'months';
+var calFilter = { months: { type: '', tag: '' }, holidays: { type: '', tag: '' } };
 
 function loadCalendarFile(file)
 {
+  calFilter = { months: { type: '', tag: '' }, holidays: { type: '', tag: '' } };
   try { calData = JSON.parse(file.content || '{}'); }
   catch(e) { calData = {}; }
   if (!calData.months)   calData.months   = [];
@@ -3291,6 +3467,8 @@ function loadCalendarFile(file)
   document.getElementById('calendar-title-input').value = file.name || calData.name || '';
   document.getElementById('cal-days-per-year').value    = calData.daysPerYear;
   document.getElementById('cal-epoch-real').value       = calData.epochRealDate;
+  var ft = document.getElementById('cal-file-tags');
+  if (ft) ft.value = (calData.tags || []).join(', ');
   switchCalendarTab('months');
   renderCalendar();
 }
@@ -3299,14 +3477,21 @@ function saveCalendarData()
 {
   if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'calendar') return;
   calData.name = document.getElementById('calendar-title-input').value.trim() || calData.name || 'Calendar';
+  var ft = document.getElementById('cal-file-tags');
+  if (ft) calData.tags = parseTagsInput(ft.value);
   files[currentFileId].name     = calData.name;
   files[currentFileId].content  = JSON.stringify(calData, null, 2);
+  files[currentFileId].fileTags = calData.tags || [];
   files[currentFileId].modified = Date.now();
   scheduleSave();
   renderFileList();
 }
 
 function onCalendarTitleChange() { saveCalendarData(); }
+function onCalendarFileTagsChange() { saveCalendarData(); }
+function onCalFilterType(v) { calFilter[calTab === 'holidays' ? 'holidays' : 'months'].type = v; renderCalendar(); }
+function onCalFilterTag(v)  { calFilter[calTab === 'holidays' ? 'holidays' : 'months'].tag  = v; renderCalendar(); }
+function calFilterByTag(t)  { calFilter[calTab === 'holidays' ? 'holidays' : 'months'].tag  = t; renderCalendar(); }
 function onCalDaysChange(v)  { calData.daysPerYear = parseInt(v,10)||365; saveCalendarData(); }
 function onCalEpochChange()  { calData.epochRealDate = document.getElementById('cal-epoch-real').value; saveCalendarData(); }
 
@@ -3319,6 +3504,11 @@ function switchCalendarTab(tab)
   });
   var addBtn = document.getElementById('cal-add-btn');
   if (addBtn) addBtn.style.display = (tab === 'convert') ? 'none' : '';
+  // The date converter has nothing to filter.
+  ['cal-filter-type', 'cal-filter-tag'].forEach(function(fid){
+    var el = document.getElementById(fid);
+    if (el) el.style.display = (tab === 'convert') ? 'none' : '';
+  });
   renderCalendar();
 }
 
@@ -3341,6 +3531,10 @@ function renderCalendarMonths()
   var months   = calData.months   || [];
   var hasData  = seasons.length + months.length > 0;
   document.getElementById('cal-months-empty').style.display = hasData ? 'none' : '';
+
+  var flt = calFilter.months;
+  flt.type = fillFacetSelect('cal-filter-type', seasons.map(function(s){ return s.name; }), flt.type, 'All seasons');
+  flt.tag  = fillFacetSelect('cal-filter-tag', collectItemTags(months), flt.tag, 'All tags');
 
   // Year timeline
   var totalDays = months.reduce(function(sum, m){ return sum + (m.days||0); }, 0);
@@ -3381,9 +3575,17 @@ function renderCalendarMonths()
     '</div>';
   }).join('');
 
-  // Month cards
+  // Month cards. The year timeline and season strip above stay unfiltered
+  // (they show the whole year by design); the facets narrow the cards only.
+  var shownMonths = months.filter(function(m){
+    var season = seasons.find(function(s){ return (s.monthIds||[]).includes(m.id); });
+    if (flt.type && (!season || season.name !== flt.type)) return false;
+    if (flt.tag && (m.tags||[]).indexOf(flt.tag) === -1) return false;
+    return true;
+  });
+
   var grid = document.getElementById('cal-months-grid');
-  grid.innerHTML = months.map(function(m){
+  grid.innerHTML = shownMonths.map(function(m){
     var season = seasons.find(function(s){ return (s.monthIds||[]).includes(m.id); });
     var sColor = season ? season.color : '#555';
     var sName  = season ? season.name  : '';
@@ -3413,6 +3615,7 @@ function renderCalendarMonths()
       (sName ? '<div class="cal-month-season-label">' + escHtml(sName) + '</div>' : '') +
       (m.description ? '<div class="cal-month-desc">' + escHtml(m.description) + '</div>' : '') +
       dotHtml +
+      tagChipsHtml(m.tags, 'calFilterByTag') +
       (holHtml ? '<div class="cal-month-hols">' + holHtml + '</div>' : '') +
       '<button class="gls-card-del cal-card-del" onclick="deleteCalendarMonth(event,\'' + m.id + '\')">×</button>' +
     '</div>';
@@ -3434,7 +3637,12 @@ var HOL_TYPE_COLORS = { festival:'#e67e22', observance:'#3498db', memorial:'#9b5
 
 function renderCalendarHolidays()
 {
-  var holidays = calData.holidays || [];
+  var all = calData.holidays || [];
+  var flt = calFilter.holidays;
+  flt.type = fillFacetSelect('cal-filter-type', all.map(function(h){ return h.type; }), flt.type, 'All types');
+  flt.tag  = fillFacetSelect('cal-filter-tag', collectItemTags(all), flt.tag, 'All tags');
+
+  var holidays = all.filter(function(h){ return itemMatchesFacets(h, flt.type, 'type', flt.tag); });
   document.getElementById('cal-holidays-empty').style.display = holidays.length ? 'none' : '';
   var sorted = holidays.slice().sort(function(a, b){
     var ai = (calData.months||[]).findIndex(function(m){ return m.id === a.monthId; });
@@ -3457,6 +3665,7 @@ function renderCalendarHolidays()
           (month ? escHtml(month.name) + ', day ' + (h.day||'?') : 'day ' + (h.day||'?')) +
         '</div>' +
         (h.description ? '<div class="cal-hol-desc">' + escHtml(h.description) + '</div>' : '') +
+        tagChipsHtml(h.tags, 'calFilterByTag') +
       '</div>' +
       '<button class="gls-card-del" onclick="deleteCalendarHoliday(event,\'' + h.id + '\')">×</button>' +
     '</div>';
@@ -3550,7 +3759,8 @@ function openCalendarMonthModal(id)
       '<label class="field-label">Days<input class="modal-input" id="cmf-days" type="number" min="1" value="' + ((m||{}).days||30) + '"></label>' +
     '</div>' +
     '<label class="field-label" style="margin-top:8px">Season<select class="modal-input tb-select" id="cmf-season"><option value="">— None —</option>' + seasonOpts + '</select></label>' +
-    '<label class="field-label" style="margin-top:8px">Description<input class="modal-input" id="cmf-desc" value="' + escAttr((m||{}).description||'') + '" placeholder="Brief description…"></label>';
+    '<label class="field-label" style="margin-top:8px">Description<input class="modal-input" id="cmf-desc" value="' + escAttr((m||{}).description||'') + '" placeholder="Brief description…"></label>' +
+    tagsField('cmf-tags', (m||{}).tags);
 
   openDataModal(id ? 'Edit month' : 'Add month', f, function()
   {
@@ -3561,7 +3771,7 @@ function openCalendarMonthModal(id)
     if (!name) return;
 
     var mid = id || genId();
-    var month = { id: mid, name: name, days: days, description: desc };
+    var month = { id: mid, name: name, days: days, description: desc, tags: parseTagsInput(document.getElementById('cmf-tags').value) };
 
     if (id)
       calData.months = calData.months.map(function(x){ return x.id === id ? month : x; });
@@ -3640,7 +3850,8 @@ function openCalendarHolidayModal(id)
       '<label class="field-label">Day<input class="modal-input" id="chf-day" type="number" min="1" value="' + ((h||{}).day||1) + '"></label>' +
       '<label class="field-label">Type<select class="modal-input tb-select" id="chf-type">' + typeOpts + '</select></label>' +
     '</div>' +
-    '<label class="field-label" style="margin-top:8px">Description<textarea class="modal-input" id="chf-desc" rows="2">' + escHtml((h||{}).description||'') + '</textarea></label>';
+    '<label class="field-label" style="margin-top:8px">Description<textarea class="modal-input" id="chf-desc" rows="2">' + escHtml((h||{}).description||'') + '</textarea></label>' +
+    tagsField('chf-tags', (h||{}).tags);
 
   openDataModal(id ? 'Edit holiday' : 'Add holiday', f, function()
   {
@@ -3652,7 +3863,8 @@ function openCalendarHolidayModal(id)
       monthId:     document.getElementById('chf-month').value,
       day:         parseInt(document.getElementById('chf-day').value, 10) || 1,
       type:        document.getElementById('chf-type').value,
-      description: document.getElementById('chf-desc').value.trim()
+      description: document.getElementById('chf-desc').value.trim(),
+      tags:        parseTagsInput(document.getElementById('chf-tags').value)
     };
     if (id)
       calData.holidays = calData.holidays.map(function(x){ return x.id === id ? holiday : x; });
@@ -3690,6 +3902,7 @@ function deleteCalendarHoliday(e, id)
 
 var ecoData = null;
 var ecoTab  = 'currencies';
+var ecoFilter = { currencies: { type: '', tag: '' }, goods: { type: '', tag: '' }, regions: { type: '', tag: '' } };
 
 function loadEconomyFile(file)
 {
@@ -3700,6 +3913,9 @@ function loadEconomyFile(file)
   if (!ecoData.tradeGoods)    ecoData.tradeGoods    = [];
   if (!ecoData.regions)       ecoData.regions       = [];
   document.getElementById('economy-title-input').value = file.name || ecoData.name || '';
+  var ft = document.getElementById('eco-file-tags');
+  if (ft) ft.value = (ecoData.tags || []).join(', ');
+  ecoFilter = { currencies: { type: '', tag: '' }, goods: { type: '', tag: '' }, regions: { type: '', tag: '' } };
   switchEconomyTab('currencies');
   renderEconomy();
 }
@@ -3708,14 +3924,21 @@ function saveEconomyData()
 {
   if (!currentFileId || !files[currentFileId] || files[currentFileId].type !== 'economy') return;
   ecoData.name = document.getElementById('economy-title-input').value.trim() || ecoData.name || 'Economy';
+  var ft = document.getElementById('eco-file-tags');
+  if (ft) ecoData.tags = parseTagsInput(ft.value);
   files[currentFileId].name     = ecoData.name;
   files[currentFileId].content  = JSON.stringify(ecoData, null, 2);
+  files[currentFileId].fileTags = ecoData.tags || [];
   files[currentFileId].modified = Date.now();
   scheduleSave();
   renderFileList();
 }
 
 function onEconomyTitleChange() { saveEconomyData(); }
+function onEconomyFileTagsChange() { saveEconomyData(); }
+function onEcoFilterType(v) { ecoFilter[ecoTab].type = v; renderEconomy(); }
+function onEcoFilterTag(v)  { ecoFilter[ecoTab].tag  = v; renderEconomy(); }
+function ecoFilterByTag(t)  { ecoFilter[ecoTab].tag  = t; renderEconomy(); }
 
 function switchEconomyTab(tab)
 {
@@ -3752,18 +3975,30 @@ function ecoCurrColor(idx)
 function renderEcoCurrencies()
 {
   var currencies = ecoData.currencies || [];
+  var flt = ecoFilter.currencies;
+  flt.type = fillFacetSelect('eco-filter-type', currencies.map(function(c){ return c.region; }), flt.type, 'All regions');
+  flt.tag  = fillFacetSelect('eco-filter-tag', collectItemTags(currencies), flt.tag, 'All tags');
+
   document.getElementById('eco-currencies-empty').style.display = currencies.length ? 'none' : '';
   document.getElementById('eco-exchange-calc').style.display    = currencies.length >= 2 ? '' : 'none';
 
+  // Color and "base currency" status follow the position in the full list,
+  // so filtering can't change which currency reads as the base.
   document.getElementById('eco-currencies-body').innerHTML = currencies.map(function(c, i){
-    var color = ecoCurrColor(i);
-    var isBase = (i === 0);
+    return { c: c, i: i };
+  }).filter(function(x){
+    return itemMatchesFacets(x.c, flt.type, 'region', flt.tag);
+  }).map(function(x){
+    var c = x.c;
+    var color = ecoCurrColor(x.i);
+    var isBase = (x.i === 0);
     return '<div class="eco-curr-card" onclick="openEcoCurrencyModal(\'' + c.id + '\')">' +
       '<div class="eco-curr-symbol" style="color:' + color + ';border-color:' + color + '44">' + escHtml(c.symbol||'?') + '</div>' +
       '<div class="eco-curr-name">' + escHtml(c.name||'') + '</div>' +
       (c.region ? '<div class="eco-curr-region">' + escHtml(c.region) + '</div>' : '') +
       '<div class="eco-curr-value">' + (isBase ? 'Base currency' : '×' + (c.baseValue||1)) + '</div>' +
       (c.description ? '<div class="eco-curr-desc">' + escHtml(c.description) + '</div>' : '') +
+      tagChipsHtml(c.tags, 'ecoFilterByTag') +
       '<button class="gls-card-del" onclick="deleteEcoCurrency(event,\'' + c.id + '\')">×</button>' +
     '</div>';
   }).join('');
@@ -3786,14 +4021,19 @@ function ecoCatColor(cat)
 function renderEcoGoods()
 {
   var goods = ecoData.tradeGoods || [];
-  document.getElementById('eco-goods-empty').style.display = goods.length ? 'none' : '';
-  var sorted = goods.slice().sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); });
+  var flt = ecoFilter.goods;
+  flt.type = fillFacetSelect('eco-filter-type', goods.map(function(g){ return g.category; }), flt.type, 'All categories');
+  flt.tag  = fillFacetSelect('eco-filter-tag', collectItemTags(goods), flt.tag, 'All tags');
+
+  var shown = goods.filter(function(g){ return itemMatchesFacets(g, flt.type, 'category', flt.tag); });
+  document.getElementById('eco-goods-empty').style.display = shown.length ? 'none' : '';
+  var sorted = shown.slice().sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); });
   document.getElementById('eco-goods-body').innerHTML = sorted.map(function(g){
     var cur = (ecoData.currencies||[]).find(function(c){ return c.id === g.priceCurrencyId; });
     var price = g.priceAmount != null ? g.priceAmount + (cur ? ' ' + escHtml(cur.symbol) : '') : '';
     var cc = ecoCatColor(g.category);
     return '<tr class="data-row" onclick="openEcoGoodModal(\'' + g.id + '\')">' +
-      '<td class="eco-good-name">' + escHtml(g.name||'') + '</td>' +
+      '<td class="eco-good-name">' + escHtml(g.name||'') + tagChipsHtml(g.tags, 'ecoFilterByTag') + '</td>' +
       '<td>' + (g.category ? '<span class="eco-cat-badge" style="background:' + cc + '22;color:' + cc + ';border-color:' + cc + '44">' + escHtml(g.category) + '</span>' : '') + '</td>' +
       '<td class="eco-price-cell">' + escHtml(price) + '</td>' +
       '<td class="eco-origin-cell">' + escHtml(g.origin||'') + '</td>' +
@@ -3806,8 +4046,13 @@ function renderEcoGoods()
 function renderEcoRegions()
 {
   var regions = ecoData.regions || [];
-  document.getElementById('eco-regions-empty').style.display = regions.length ? 'none' : '';
-  document.getElementById('eco-regions-body').innerHTML = regions.map(function(r){
+  var flt = ecoFilter.regions;
+  flt.type = fillFacetSelect('eco-filter-type', regions.map(function(r){ return r.economicStatus; }), flt.type, 'All statuses');
+  flt.tag  = fillFacetSelect('eco-filter-tag', collectItemTags(regions), flt.tag, 'All tags');
+
+  var shown = regions.filter(function(r){ return itemMatchesFacets(r, flt.type, 'economicStatus', flt.tag); });
+  document.getElementById('eco-regions-empty').style.display = shown.length ? 'none' : '';
+  document.getElementById('eco-regions-body').innerHTML = shown.map(function(r){
     var cur  = (ecoData.currencies||[]).find(function(c){ return c.id === r.primaryCurrencyId; });
     var sc   = ECO_STATUS_COLORS[r.economicStatus] || '#9ca3af';
     var exps = (r.exports||[]).map(function(e){ return '<span class="eco-trade-chip eco-export-chip">' + escHtml(e) + '</span>'; }).join('');
@@ -3821,6 +4066,7 @@ function renderEcoRegions()
       (exps ? '<div class="eco-region-trade"><span class="eco-trade-label">Exports</span>' + exps + '</div>' : '') +
       (imps ? '<div class="eco-region-trade"><span class="eco-trade-label">Imports</span>' + imps + '</div>' : '') +
       (r.notes ? '<div class="eco-region-notes">' + escHtml(r.notes) + '</div>' : '') +
+      tagChipsHtml(r.tags, 'ecoFilterByTag') +
       '<button class="gls-card-del" onclick="deleteEcoRegion(event,\'' + r.id + '\')">×</button>' +
     '</div>';
   }).join('');
@@ -3886,6 +4132,7 @@ function openEcoCurrencyModal(id)
       '<label class="field-label">Base value<input class="modal-input" id="ecf-base" type="number" step="any" value="' + ((c||{}).baseValue||1) + '" placeholder="relative value"></label>' +
     '</div>' +
     '<label class="field-label" style="margin-top:8px">Notes<input class="modal-input" id="ecf-desc" value="' + escAttr((c||{}).description||'') + '"></label>' +
+    tagsField('ecf-tags', (c||{}).tags) +
     xrHtml;
 
   openDataModal(id ? 'Edit currency' : 'Add currency', f, function()
@@ -3899,7 +4146,8 @@ function openEcoCurrencyModal(id)
       symbol:      document.getElementById('ecf-sym').value.trim(),
       region:      document.getElementById('ecf-reg').value.trim(),
       baseValue:   parseFloat(document.getElementById('ecf-base').value) || 1,
-      description: document.getElementById('ecf-desc').value.trim()
+      description: document.getElementById('ecf-desc').value.trim(),
+      tags:        parseTagsInput(document.getElementById('ecf-tags').value)
     };
 
     if (id)
@@ -3939,7 +4187,8 @@ function openEcoGoodModal(id)
       '<label class="field-label">Currency<select class="modal-input tb-select" id="egf-cur"><option value="">— select —</option>' + curOpts + '</select></label>' +
     '</div>' +
     '<label class="field-label" style="margin-top:8px">Origin region<input class="modal-input" id="egf-origin" value="' + escAttr((g||{}).origin||'') + '"></label>' +
-    '<label class="field-label" style="margin-top:8px">Description<textarea class="modal-input" id="egf-desc" rows="2">' + escHtml((g||{}).description||'') + '</textarea></label>';
+    '<label class="field-label" style="margin-top:8px">Description<textarea class="modal-input" id="egf-desc" rows="2">' + escHtml((g||{}).description||'') + '</textarea></label>' +
+    tagsField('egf-tags', (g||{}).tags);
 
   openDataModal(id ? 'Edit trade good' : 'Add trade good', f, function()
   {
@@ -3952,7 +4201,8 @@ function openEcoGoodModal(id)
       priceAmount:      parseFloat(document.getElementById('egf-price').value) || null,
       priceCurrencyId:  document.getElementById('egf-cur').value,
       origin:           document.getElementById('egf-origin').value.trim(),
-      description:      document.getElementById('egf-desc').value.trim()
+      description:      document.getElementById('egf-desc').value.trim(),
+      tags:             parseTagsInput(document.getElementById('egf-tags').value)
     };
     if (id)
       ecoData.tradeGoods = ecoData.tradeGoods.map(function(x){ return x.id === id ? good : x; });
@@ -3985,7 +4235,8 @@ function openEcoRegionModal(id)
       '<label class="field-label">Main exports <span style="color:var(--text3);font-weight:400">(comma separated)</span><input class="modal-input" id="erf-exp" value="' + escAttr(((r||{}).exports||[]).join(', ')) + '"></label>' +
       '<label class="field-label">Main imports <span style="color:var(--text3);font-weight:400">(comma separated)</span><input class="modal-input" id="erf-imp" value="' + escAttr(((r||{}).imports||[]).join(', ')) + '"></label>' +
     '</div>' +
-    '<label class="field-label" style="margin-top:8px">Notes<textarea class="modal-input" id="erf-notes" rows="2">' + escHtml((r||{}).notes||'') + '</textarea></label>';
+    '<label class="field-label" style="margin-top:8px">Notes<textarea class="modal-input" id="erf-notes" rows="2">' + escHtml((r||{}).notes||'') + '</textarea></label>' +
+    tagsField('erf-tags', (r||{}).tags);
 
   openDataModal(id ? 'Edit region' : 'Add region', f, function()
   {
@@ -3998,7 +4249,8 @@ function openEcoRegionModal(id)
       primaryCurrencyId: document.getElementById('erf-cur').value,
       exports:           document.getElementById('erf-exp').value.split(',').map(function(t){ return t.trim(); }).filter(Boolean),
       imports:           document.getElementById('erf-imp').value.split(',').map(function(t){ return t.trim(); }).filter(Boolean),
-      notes:             document.getElementById('erf-notes').value.trim()
+      notes:             document.getElementById('erf-notes').value.trim(),
+      tags:              parseTagsInput(document.getElementById('erf-tags').value)
     };
     if (id)
       ecoData.regions = ecoData.regions.map(function(x){ return x.id === id ? region : x; });
@@ -15251,6 +15503,7 @@ async function openSharedRegistry(key)
 
   applySharedReadOnly();
   updateCommentsUI();
+  updateLiveSync();
 }
 
 function exitSharedMode()
@@ -15691,6 +15944,298 @@ async function removeComment(id)
 {
   try { await Platform.deleteComment(id); } catch(e) {}
   refreshComments();
+}
+
+// ── LIVE SYNC (concurrent editing for the JSON data apps) ──
+//
+// While a Glossary / Bestiary / Calendar / Economy file is open, the server
+// is polled for changes to that file (a cheap {modified, hash} stat) so the
+// same file can be edited from several devices — or by several people
+// through a share — at once, with everyone seeing everyone else's changes
+// within a few seconds. Remote and local edits are reconciled with a
+// three-way merge at item granularity (see mergeDataContent), which these
+// JSON files support cleanly because every item carries a stable id.
+// Web only: on Tauri the stat call resolves null and the poller never
+// starts — the desktop app keeps its explicit cloud-sync flow.
+
+var LIVE_SYNC_INTERVAL = 3000;
+
+var liveSyncTimer      = null;
+var liveSyncFileId     = null;   // file the poller is tracking
+var liveSyncBase       = null;   // content as of the last agreement with the server
+var liveSyncServerHash = null;   // server hash seen on the previous tick
+var liveSyncBusy       = false;
+
+function liveSyncTarget()
+{
+  if (Platform.isNative) return null;
+  var f = currentFileId && files[currentFileId];
+  if (!f || !DATA_FILE_TYPES[f.type] || !f.contentLoaded) return null;
+  if (currentFileId === SHARED_TMP_ID)
+  {
+    if (!sharedCtx) return null;
+    // Any permission level may watch; only edit may write back.
+    return sharedCtx.link
+      ? { link: sharedCtx.link, subPath: sharedCtx.subPath }
+      : { share: sharedCtx.shareId, subPath: sharedCtx.subPath };
+  }
+  if (!workFolderRoot) return null; // local-storage mode: nothing to sync with
+  return { path: currentFileId };
+}
+
+// (Re)aims the poller at whatever is currently open. Called after every
+// file open; the tick also calls it when it notices the file changed.
+function updateLiveSync()
+{
+  var target = liveSyncTarget();
+  liveSyncFileId     = target ? currentFileId : null;
+  liveSyncBase       = target ? (files[currentFileId].content || '') : null;
+  liveSyncServerHash = null;
+
+  var pill = document.getElementById('live-sync-pill');
+  if (pill) pill.style.display = target ? '' : 'none';
+
+  if (target && !liveSyncTimer)
+    liveSyncTimer = setInterval(liveSyncTick, LIVE_SYNC_INTERVAL);
+  if (!target && liveSyncTimer)
+  {
+    clearInterval(liveSyncTimer);
+    liveSyncTimer = null;
+  }
+}
+
+function flashLiveSyncPill()
+{
+  var pill = document.getElementById('live-sync-pill');
+  if (!pill) return;
+  pill.textContent = '↻ Updated';
+  pill.classList.add('flash');
+  setTimeout(function()
+  {
+    pill.textContent = '● Live';
+    pill.classList.remove('flash');
+  }, 1600);
+}
+
+async function liveSyncTick()
+{
+  if (liveSyncBusy) return;
+  if (currentFileId !== liveSyncFileId) { updateLiveSync(); return; }
+  var target = liveSyncTarget();
+  if (!target) { updateLiveSync(); return; }
+
+  liveSyncBusy = true;
+  try
+  {
+    var stat;
+    try
+    {
+      stat = target.link  ? await Platform.statLinkFile(target.link, target.subPath)
+           : target.share ? await Platform.statSharedFile(target.share, target.subPath)
+           :                await Platform.statWorkFile(workFolderRoot, target.path);
+    }
+    catch(e) { return; } // transient network error, or the file moved remotely — try again next tick
+
+    if (!stat || !stat.hash) return;
+    if (stat.hash === liveSyncServerHash) return; // nothing new on the server
+
+    var remote;
+    try
+    {
+      remote = target.link  ? await Platform.readLinkFile(target.link, target.subPath)
+             : target.share ? await Platform.readSharedFile(target.share, target.subPath)
+             :                await Platform.readWorkFile(workFolderRoot, target.path);
+    }
+    catch(e) { return; }
+
+    // Things may have changed while awaiting the fetch.
+    if (currentFileId !== liveSyncFileId || !files[currentFileId]) return;
+
+    var f     = files[currentFileId];
+    var local = f.content || '';
+    var merged = (local === liveSyncBase || liveSyncBase === null)
+      ? remote
+      : mergeDataContent(f.type, liveSyncBase, local, remote);
+
+    if (merged !== local)
+    {
+      f.content  = merged;
+      f.fileTags = undefined; // recomputed lazily from the new content
+      f.modified = stat.modified || Date.now();
+      applyRemoteDataContent(currentFileId);
+      flashLiveSyncPill();
+    }
+
+    if (merged !== remote)
+    {
+      // Our local edits survived the merge — push the merged result back so
+      // the other devices converge on it. (Read-only shares never diverge:
+      // their UI can't edit, so local always equals base.)
+      var canWrite = !sharedCtx || sharedCtx.permission === 'edit';
+      if (canWrite)
+      {
+        try
+        {
+          if (target.link)       await Platform.writeLinkFile(target.link, target.subPath, merged);
+          else if (target.share) await Platform.writeSharedFile(target.share, target.subPath, merged);
+          else                   await Platform.writeWorkFile(workFolderRoot, target.path, merged);
+          liveSyncBase = merged;
+          liveSyncServerHash = null; // our write changed the server hash; re-read it next tick
+        }
+        catch(e) {}
+      }
+      else
+        liveSyncBase = merged;
+    }
+    else
+    {
+      liveSyncBase = remote;
+      liveSyncServerHash = stat.hash;
+    }
+  }
+  finally
+  {
+    liveSyncBusy = false;
+  }
+}
+
+// Which top-level keys of each data file are item arrays (merged per item);
+// everything else is treated as a scalar (local wins only when it changed).
+var DATA_ARRAY_KEYS = {
+  glossary: ['entries', 'roots'],
+  bestiary: ['beasts'],
+  calendar: ['seasons', 'months', 'holidays'],
+  economy:  ['currencies', 'exchangeRates', 'tradeGoods', 'regions']
+};
+
+function mergeDataContent(type, baseStr, localStr, remoteStr)
+{
+  var base, local, remote;
+  try { base = JSON.parse(baseStr || '{}'); } catch(e) { base = {}; }
+  try { local = JSON.parse(localStr || '{}'); } catch(e) { return remoteStr; }
+  try { remote = JSON.parse(remoteStr || '{}'); } catch(e) { return localStr; }
+
+  var arrayKeys = DATA_ARRAY_KEYS[type] || [];
+  var merged = {};
+  var seenKeys = {};
+  [remote, local, base].forEach(function(o){ Object.keys(o).forEach(function(k){ seenKeys[k] = 1; }); });
+
+  Object.keys(seenKeys).forEach(function(k)
+  {
+    if (arrayKeys.indexOf(k) !== -1) return;
+    var localChanged = JSON.stringify(local[k]) !== JSON.stringify(base[k]);
+    var v = localChanged ? local[k] : remote[k];
+    if (v !== undefined) merged[k] = v;
+  });
+
+  arrayKeys.forEach(function(k)
+  {
+    merged[k] = mergeItemArrays(base[k] || [], local[k] || [], remote[k] || []);
+  });
+
+  return JSON.stringify(merged, null, 2);
+}
+
+// Three-way merge of two divergent copies of an item array, by item id.
+// Remote order wins (they may have re-ordered); local-only survivors append.
+function mergeItemArrays(base, local, remote)
+{
+  function mapById(arr)
+  {
+    var m = {};
+    arr.forEach(function(x){ if (x && x.id) m[x.id] = x; });
+    return m;
+  }
+
+  var bm = mapById(base), lm = mapById(local);
+  var out = [], seen = {};
+
+  remote.forEach(function(r)
+  {
+    if (!r || !r.id || seen[r.id]) return;
+    seen[r.id] = 1;
+    var l = lm[r.id], b = bm[r.id];
+    if (!l)
+    {
+      // Missing locally: new on the remote (keep) or deleted locally (drop).
+      if (!b) out.push(r);
+      return;
+    }
+    var localChanged = JSON.stringify(l) !== JSON.stringify(b);
+    out.push(localChanged ? l : r);
+  });
+
+  local.forEach(function(l)
+  {
+    if (!l || !l.id) { out.push(l); return; } // id-less item: never drop silently
+    if (seen[l.id]) return;
+    seen[l.id] = 1;
+    var b = bm[l.id];
+    // Missing remotely: new local item (keep), or deleted remotely — where a
+    // concurrent local edit beats the delete, and an untouched item follows it.
+    if (!b || JSON.stringify(l) !== JSON.stringify(b)) out.push(l);
+  });
+
+  return out;
+}
+
+// Re-points the open editor at freshly merged content and re-renders,
+// preserving the user's tab, search, facet filters, and whatever input
+// they're typing in (inputs holding focus are never overwritten).
+function applyRemoteDataContent(id)
+{
+  var f = files[id];
+  if (!f || currentFileId !== id) return;
+
+  var data;
+  try { data = JSON.parse(f.content || '{}'); } catch(e) { return; }
+
+  var focused = document.activeElement;
+  function setInput(elId, val)
+  {
+    var el = document.getElementById(elId);
+    if (el && el !== focused) el.value = val;
+  }
+
+  if (f.type === 'glossary')
+  {
+    glsData = data;
+    if (!glsData.entries) glsData.entries = [];
+    if (!glsData.roots)   glsData.roots   = [];
+    setInput('gls-file-tags', (glsData.tags || []).join(', '));
+    renderGlossary();
+  }
+  else if (f.type === 'bestiary')
+  {
+    bstData = data;
+    if (!bstData.beasts) bstData.beasts = [];
+    setInput('bst-file-tags', (bstData.tags || []).join(', '));
+    renderBestiary();
+  }
+  else if (f.type === 'calendar')
+  {
+    calData = data;
+    if (!calData.months)   calData.months   = [];
+    if (!calData.seasons)  calData.seasons  = [];
+    if (!calData.holidays) calData.holidays = [];
+    if (!calData.daysPerYear) calData.daysPerYear = 365;
+    setInput('cal-file-tags', (calData.tags || []).join(', '));
+    setInput('cal-days-per-year', calData.daysPerYear);
+    if (calData.epochRealDate) setInput('cal-epoch-real', calData.epochRealDate);
+    renderCalendar();
+  }
+  else if (f.type === 'economy')
+  {
+    ecoData = data;
+    if (!ecoData.currencies)    ecoData.currencies    = [];
+    if (!ecoData.exchangeRates) ecoData.exchangeRates = [];
+    if (!ecoData.tradeGoods)    ecoData.tradeGoods    = [];
+    if (!ecoData.regions)       ecoData.regions       = [];
+    setInput('eco-file-tags', (ecoData.tags || []).join(', '));
+    renderEconomy();
+  }
+
+  renderFileList();
 }
 
 

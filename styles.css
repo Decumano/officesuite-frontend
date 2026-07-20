@@ -3967,3 +3967,34 @@ mark.gs-hl
   .relations-head { flex-wrap: wrap; }
   .rel-slider-label input[type="range"] { width: 76px; }
 }
+
+/* ── Tags & facet filters (Glossary / Bestiary / Calendar / Economy) ── */
+.tb-filter { max-width: 130px; }
+.tb-file-tags { width: 120px; }
+
+.item-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.item-tag {
+  display: inline-block; font-size: 10px; font-weight: 600;
+  background: var(--accent-dim, var(--bg3)); border: 1px solid var(--border2);
+  color: var(--accent); border-radius: 3px; padding: 1px 6px; cursor: pointer;
+  transition: border-color .12s;
+}
+.item-tag:hover { border-color: var(--accent); }
+
+/* File tags shown next to the date in the sidebar rows */
+.file-tag {
+  display: inline-block; font-size: 9px; font-weight: 600;
+  color: var(--accent); background: var(--accent-dim, var(--bg3));
+  border-radius: 3px; padding: 0 4px; margin-left: 4px; cursor: pointer;
+}
+.file-tag:hover { text-decoration: underline; }
+
+/* ── Live-sync pill (concurrent editing, web only) ── */
+#live-sync-pill {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px; z-index: 780;
+  background: var(--bg3); border: 1px solid var(--border2); color: var(--text2);
+  font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.3); pointer-events: none;
+  transition: color .2s, border-color .2s;
+}
+#live-sync-pill.flash { color: var(--accent); border-color: var(--accent); }
