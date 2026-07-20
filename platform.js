@@ -56,6 +56,14 @@ var Platform = (function () {
     }).then(function () { return undefined; });
   }
 
+  // Cheap change-detection: {modified, hash} for one file, without the
+  // content. Resolves null on Tauri, where live sync doesn't apply (the
+  // desktop app has its own explicit cloud-sync flow).
+  function statWorkFile(root, relPath) {
+    if (tauri) return Promise.resolve(null);
+    return apiJson('/workspace/stat?path=' + encodeURIComponent(relPath));
+  }
+
   function createWorkFolder(root, relPath) {
     if (tauri) return tauri.invoke('create_work_folder', { root: root, relPath: relPath });
     return api('/workspace/folder', {
@@ -183,6 +191,11 @@ var Platform = (function () {
       .then(function (res) { return res.text(); });
   }
 
+  function statSharedFile(shareId, subPath) {
+    if (tauri) return Promise.resolve(null);
+    return apiJson('/shared/stat?share=' + encodeURIComponent(shareId) + '&path=' + encodeURIComponent(subPath || ''));
+  }
+
   function writeSharedFile(shareId, subPath, content) {
     if (tauri) return webOnly();
     return api('/shared/file?share=' + encodeURIComponent(shareId) + '&path=' + encodeURIComponent(subPath || ''), {
@@ -227,6 +240,11 @@ var Platform = (function () {
     if (tauri) return webOnly();
     return api('/link/' + encodeURIComponent(token) + '/file?path=' + encodeURIComponent(subPath || ''))
       .then(function (res) { return res.text(); });
+  }
+
+  function statLinkFile(token, subPath) {
+    if (tauri) return Promise.resolve(null);
+    return apiJson('/link/' + encodeURIComponent(token) + '/stat?path=' + encodeURIComponent(subPath || ''));
   }
 
   function writeLinkFile(token, subPath, content) {
@@ -390,6 +408,7 @@ var Platform = (function () {
     listWorkFolder: listWorkFolder,
     readWorkFile: readWorkFile,
     writeWorkFile: writeWorkFile,
+    statWorkFile: statWorkFile,
     createWorkFolder: createWorkFolder,
     deleteWorkEntry: deleteWorkEntry,
     moveWorkEntry: moveWorkEntry,
@@ -413,6 +432,7 @@ var Platform = (function () {
     listSharedFolder: listSharedFolder,
     readSharedFile: readSharedFile,
     writeSharedFile: writeSharedFile,
+    statSharedFile: statSharedFile,
     listComments: listComments,
     addComment: addComment,
     deleteComment: deleteComment,
@@ -423,6 +443,7 @@ var Platform = (function () {
     listLinkFolder: listLinkFolder,
     readLinkFile: readLinkFile,
     writeLinkFile: writeLinkFile,
+    statLinkFile: statLinkFile,
     listCustomFonts: listCustomFonts,
     uploadCustomFont: uploadCustomFont,
     deleteCustomFont: deleteCustomFont,

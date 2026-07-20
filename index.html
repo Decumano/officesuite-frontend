@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lore Keep</title>
-  <link rel="stylesheet" href="styles.css?v=14">
+  <link rel="stylesheet" href="styles.css?v=15">
 </head>
 <body>
   <div id="auth-gate" style="position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;background:#14161a;font-family:system-ui,sans-serif;">
@@ -411,6 +411,9 @@
           </div>
           <div class="toolbar-sep"></div>
           <input class="tb-search" id="gls-search" type="text" placeholder="Search…" oninput="onGlossarySearch(this.value)">
+          <select class="tb-select tb-filter" id="gls-filter-type" title="Filter by type" onchange="onGlsFilterType(this.value)"></select>
+          <select class="tb-select tb-filter" id="gls-filter-tag" title="Filter by tag" onchange="onGlsFilterTag(this.value)"></select>
+          <input class="tb-search tb-file-tags" id="gls-file-tags" type="text" placeholder="File tags…" title="Tags for this file (comma separated)" oninput="onGlossaryFileTagsChange()">
           <div style="flex:1"></div>
           <button class="tb-btn tb-btn-wide" id="gls-add-btn" onclick="glsAddCurrent()">+ Add</button>
           <div class="toolbar-sep"></div>
@@ -440,6 +443,9 @@
           <input id="bestiary-title-input" placeholder="Bestiary name…" oninput="onBestiaryTitleChange()">
           <div class="toolbar-sep"></div>
           <input class="tb-search" id="bst-search" type="text" placeholder="Search beasts…" oninput="onBestiarySearch(this.value)">
+          <select class="tb-select tb-filter" id="bst-filter-type" title="Filter by category" onchange="onBstFilterType(this.value)"></select>
+          <select class="tb-select tb-filter" id="bst-filter-tag" title="Filter by tag" onchange="onBstFilterTag(this.value)"></select>
+          <input class="tb-search tb-file-tags" id="bst-file-tags" type="text" placeholder="File tags…" title="Tags for this file (comma separated)" oninput="onBestiaryFileTagsChange()">
           <div style="flex:1"></div>
           <button class="tb-btn tb-btn-wide" id="bst-add-btn" onclick="openBeastModal(null)">+ Add beast</button>
           <div class="toolbar-sep"></div>
@@ -469,6 +475,9 @@
           <label class="cal-days-label">Days/year
             <input class="tb-input-sm" id="cal-days-per-year" type="number" min="1" value="365" onchange="onCalDaysChange(this.value)">
           </label>
+          <select class="tb-select tb-filter" id="cal-filter-type" title="Filter by season / type" onchange="onCalFilterType(this.value)"></select>
+          <select class="tb-select tb-filter" id="cal-filter-tag" title="Filter by tag" onchange="onCalFilterTag(this.value)"></select>
+          <input class="tb-search tb-file-tags" id="cal-file-tags" type="text" placeholder="File tags…" title="Tags for this file (comma separated)" oninput="onCalendarFileTagsChange()">
           <div style="flex:1"></div>
           <button class="tb-btn tb-btn-wide" id="cal-add-btn" onclick="calAddCurrent()">+ Add</button>
           <div class="toolbar-sep"></div>
@@ -531,6 +540,10 @@
             <button class="gls-tab" id="eco-tab-goods" onclick="switchEconomyTab('goods')">Trade Goods</button>
             <button class="gls-tab" id="eco-tab-regions" onclick="switchEconomyTab('regions')">Regions</button>
           </div>
+          <div class="toolbar-sep"></div>
+          <select class="tb-select tb-filter" id="eco-filter-type" title="Filter by region / category / status" onchange="onEcoFilterType(this.value)"></select>
+          <select class="tb-select tb-filter" id="eco-filter-tag" title="Filter by tag" onchange="onEcoFilterTag(this.value)"></select>
+          <input class="tb-search tb-file-tags" id="eco-file-tags" type="text" placeholder="File tags…" title="Tags for this file (comma separated)" oninput="onEconomyFileTagsChange()">
           <div style="flex:1"></div>
           <button class="tb-btn tb-btn-wide" id="eco-add-btn" onclick="ecoAddCurrent()">+ Add</button>
           <div class="toolbar-sep"></div>
@@ -953,9 +966,13 @@
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/chart.umd.js"></script>
-  <script type="text/javascript" src="platform.js?v=14"></script>
+  <script type="text/javascript" src="platform.js?v=15"></script>
   <!-- Shared-file banner (fixed, web only) -->
   <div id="view-only-banner" style="display:none"></div>
+
+  <!-- Live-sync pill (web only): shown while the open data file polls for
+       concurrent edits from other devices / collaborators -->
+  <div id="live-sync-pill" style="display:none" title="This file syncs live — edits from other devices appear automatically">● Live</div>
 
   <!-- Comments (any open work file, web only) -->
   <button id="comments-fab" style="display:none" title="Comments" onclick="toggleCommentsPanel()">
@@ -1007,7 +1024,7 @@
     </div>
   </div>
 
-  <script type="text/javascript" src="auth-gate.js?v=14"></script>
+  <script type="text/javascript" src="auth-gate.js?v=15"></script>
 
   <!-- TRAVEL DETAIL POPOVER -->
   <div id="travel-popover" style="display:none;position:fixed;z-index:901;min-width:300px;max-width:360px;">
