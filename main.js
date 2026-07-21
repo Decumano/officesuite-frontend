@@ -702,7 +702,7 @@ function extractSearchableText(id)
     try
     {
       var bd = JSON.parse(c), bparts = (bd.tags || []).slice();
-      (bd.beasts || []).forEach(function(b) { bparts.push(b.name, b.category, b.habitat, b.description); if (b.abilities) bparts = bparts.concat(b.abilities); if (b.tags) bparts = bparts.concat(b.tags); });
+      (bd.beasts || []).forEach(function(b) { bparts.push(b.name, b.commonName, b.category, b.habitat, b.description); if (b.abilities) bparts = bparts.concat(b.abilities); if (b.tags) bparts = bparts.concat(b.tags); });
       return bparts.filter(Boolean).join(' ');
     }
     catch(e) { return ''; }
@@ -3355,13 +3355,14 @@ function renderBestiary()
     .filter(function(b){ return itemMatchesFacets(b, bstFilter.type, 'category', bstFilter.tag); })
     .filter(function(b){
       return !q || (b.name||'').toLowerCase().includes(q) ||
+             (b.commonName||'').toLowerCase().includes(q) ||
              (b.category||'').toLowerCase().includes(q) ||
              (b.habitat||'').toLowerCase().includes(q) ||
              (b.description||'').toLowerCase().includes(q) ||
              (b.tags||[]).some(function(t){ return t.toLowerCase().includes(q); }) ||
              (b.abilities||[]).some(function(a){ return a.toLowerCase().includes(q); });
     })
-    .sort(function(a, b){ return (a.name||'').localeCompare(b.name||''); });
+    .sort(function(a, b){ return (a.commonName||a.name||'').localeCompare(b.commonName||b.name||''); });
 
   document.getElementById('bst-empty').style.display = beasts.length ? 'none' : '';
 
@@ -3380,7 +3381,9 @@ function renderBestiary()
         var abilities = (b.abilities||[]).map(function(a){ return '<span class="gls-tag">' + escHtml(a) + '</span>'; }).join('');
         return '<div class="bst-card" onclick="openBeastModal(\'' + b.id + '\')">' +
           '<div class="bst-card-head">' +
-            '<div class="bst-name">' + escHtml(b.name||'') + '</div>' +
+            '<div class="bst-name">' + escHtml(b.commonName || b.name || '') +
+              (b.commonName && b.name ? ' <span class="bst-sci-name">' + escHtml(b.name) + '</span>' : '') +
+            '</div>' +
             bstDangerBadge(b.danger || 1) +
             (b.habitat ? '<span class="bst-habitat" title="Habitat">' + escHtml(b.habitat) + '</span>' : '') +
           '</div>' +
@@ -3397,21 +3400,22 @@ function renderBestiary()
 function openBeastModal(id)
 {
   var b = id ? (bstData.beasts||[]).find(function(x){ return x.id === id; }) : null;
-  if (b) noteItemAnchor('beast', b.id, b.name);
+  if (b) noteItemAnchor('beast', b.id, b.commonName || b.name);
   var danger = (b||{}).danger || 1;
   var f =
     '<div class="dem-grid">' +
-      '<label class="field-label">Name<input class="modal-input" id="bef-name" value="' + escAttr((b||{}).name||'') + '" placeholder="Creature name"></label>' +
-      '<label class="field-label">Category<input class="modal-input" id="bef-cat" value="' + escAttr((b||{}).category||'') + '" placeholder="e.g. Dragon, Undead, Fey…"></label>' +
+      '<label class="field-label">Common name<input class="modal-input" id="bef-common" value="' + escAttr((b||{}).commonName||'') + '" placeholder="Everyday name…"></label>' +
+      '<label class="field-label">Scientific name<input class="modal-input" id="bef-name" value="' + escAttr((b||{}).name||'') + '" placeholder="Formal / scholarly name…"></label>' +
     '</div>' +
     '<div class="dem-grid" style="margin-top:8px">' +
+      '<label class="field-label">Category<input class="modal-input" id="bef-cat" value="' + escAttr((b||{}).category||'') + '" placeholder="e.g. Dragon, Undead, Fey…"></label>' +
       '<label class="field-label">Danger level<select class="modal-input tb-select" id="bef-danger">' +
         BST_DANGER_LABELS.map(function(lbl, i){
           return '<option value="' + (i + 1) + '"' + (danger === i + 1 ? ' selected' : '') + '>' + (i + 1) + ' — ' + lbl + '</option>';
         }).join('') +
       '</select></label>' +
-      '<label class="field-label">Habitat<input class="modal-input" id="bef-habitat" value="' + escAttr((b||{}).habitat||'') + '" placeholder="Where it lives…"></label>' +
     '</div>' +
+    '<label class="field-label" style="margin-top:8px">Habitat<input class="modal-input" id="bef-habitat" value="' + escAttr((b||{}).habitat||'') + '" placeholder="Where it lives…"></label>' +
     '<label class="field-label" style="margin-top:8px">Description<textarea class="modal-input" id="bef-desc" rows="4" placeholder="Appearance, behaviour, lore…">' + escHtml((b||{}).description||'') + '</textarea></label>' +
     '<label class="field-label" style="margin-top:8px">Abilities <span style="color:var(--text3);font-weight:400">(comma separated)</span><input class="modal-input" id="bef-abilities" value="' + escAttr(((b||{}).abilities||[]).join(', ')) + '" placeholder="e.g. Fire breath, Flight…"></label>' +
     tagsField('bef-tags', (b||{}).tags);
@@ -3421,6 +3425,7 @@ function openBeastModal(id)
     var beast = {
       id:          id || genId(),
       name:        document.getElementById('bef-name').value.trim(),
+      commonName:  document.getElementById('bef-common').value.trim(),
       category:    document.getElementById('bef-cat').value.trim(),
       danger:      parseInt(document.getElementById('bef-danger').value, 10) || 1,
       habitat:     document.getElementById('bef-habitat').value.trim(),
@@ -3428,7 +3433,7 @@ function openBeastModal(id)
       abilities:   document.getElementById('bef-abilities').value.split(',').map(function(t){ return t.trim(); }).filter(Boolean),
       tags:        parseTagsInput(document.getElementById('bef-tags').value)
     };
-    if (!beast.name) return;
+    if (!beast.name && !beast.commonName) return;
     if (id)
       bstData.beasts = bstData.beasts.map(function(x){ return x.id === id ? beast : x; });
     else
@@ -6441,6 +6446,11 @@ let nbPdfDocCacheKey = null;
 let nbPageObserver = null;
 let nbZoom = 1;
 
+// Pending SVG vector import awaiting interactive placement: strokes are held
+// normalized (bounds shifted to origin, unscaled) and only baked into the
+// page's stroke list when the user accepts the position/size.
+let nbImport = null;
+
 // Per-page offscreen bitmap of every *committed* stroke/shape (i.e. everything
 // except whatever's currently being drawn), keyed by page index. Letting an
 // active pen/highlighter/shape draw on top of a cached blit instead of
@@ -6549,6 +6559,8 @@ function loadNotebookFile(file)
   nbRedoStack = [];
   nbSelection = [];
   nbActive = null;
+  nbImport = null;
+  document.getElementById('nb-import-bar').style.display = 'none';
   nbPdfDocCache = null;
   nbPdfDocCacheKey = null;
   nbZoom = 1;
@@ -6870,15 +6882,52 @@ async function renderNotebookPdfBackground(page, canvas)
   }
 }
 
-function drawNotebookStroke(ctx, stroke)
+function drawNotebookStroke(ctx, stroke, alphaScale)
 {
   const pts = stroke.points;
 
-  ctx.globalAlpha = (stroke.tool === 'highlighter') ? 0.35 : 1;
+  ctx.globalAlpha = ((stroke.tool === 'highlighter') ? 0.35 : 1) * (alphaScale || 1);
   ctx.strokeStyle = stroke.color;
   ctx.fillStyle = stroke.color;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+
+  if (stroke.fill)
+  {
+    // Filled stroke (SVG import): the points trace the shape's outline(s),
+    // with `breaks` marking indices where a new subpath starts. Nonzero
+    // winding (the SVG default) keeps self-intersecting shapes solid -
+    // Excalidraw freedraw ribbons overlap themselves constantly - while
+    // still leaving holes (letter counters, rings) empty via subpath
+    // winding direction; evenodd is honored when the source asked for it.
+    const breaks = stroke.breaks || [];
+    let bi = 0;
+
+    ctx.beginPath();
+
+    for (let i = 0; i < pts.length; i++)
+    {
+      if (i === 0)
+      {
+        ctx.moveTo(pts[i].x, pts[i].y);
+      }
+      else if (bi < breaks.length && breaks[bi] === i)
+      {
+        ctx.closePath();
+        ctx.moveTo(pts[i].x, pts[i].y);
+        bi++;
+      }
+      else
+      {
+        ctx.lineTo(pts[i].x, pts[i].y);
+      }
+    }
+
+    ctx.closePath();
+    ctx.fill(stroke.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
+    ctx.globalAlpha = 1;
+    return;
+  }
 
   if (pts.length === 1)
   {
@@ -7036,6 +7085,31 @@ function redrawNotebookPage(pageIndex)
       drawNotebookStroke(ctx, nbActive.stroke);
     else if (activeHere && nbActive.kind === 'shape')
       drawNotebookShape(ctx, nbActive.shape);
+  }
+
+  if (nbImport && nbImport.pageIndex === pageIndex)
+  {
+    const iw = nbImport.w * nbImport.scale,
+          ih = nbImport.h * nbImport.scale;
+
+    // Ghost preview of the pending vector, rendered through the exact same
+    // stroke pipeline that committed ink uses, just translated/scaled and
+    // slightly transparent until the user accepts the placement.
+    ctx.save();
+    ctx.translate(nbImport.x, nbImport.y);
+    ctx.scale(nbImport.scale, nbImport.scale);
+    nbImport.strokes.forEach(function(s){ drawNotebookStroke(ctx, s, 0.75); });
+    ctx.restore();
+
+    ctx.save();
+    ctx.strokeStyle = '#d4a843';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(nbImport.x - 6, nbImport.y - 6, iw + 12, ih + 12);
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#d4a843';
+    ctx.fillRect(nbImport.x + iw + 1, nbImport.y + ih + 1, 10, 10);
+    ctx.restore();
   }
 
   if (nbActive && nbActive.kind === 'marquee' && nbActive.pageIndex === pageIndex)
@@ -7198,6 +7272,11 @@ function notebookDeletePage()
   nbData.pages.splice(targetPage, 1);
   nbSelection = [];
 
+  // Page indices shift under a pending vector import - drop it rather than
+  // letting it land on the wrong page.
+  if (nbImport)
+    cancelNotebookVectorImport();
+
   renderNotebookPages();
   commitNotebookChange();
   notebookGoToPage(Math.min(targetPage, nbData.pages.length - 1));
@@ -7267,6 +7346,35 @@ document.addEventListener
 
     if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable))
       return;
+
+    if (nbImport)
+    {
+      if (e.key === 'Enter')
+      {
+        e.preventDefault();
+        acceptNotebookVectorImport();
+      }
+      else if (e.key === 'Escape')
+      {
+        e.preventDefault();
+        cancelNotebookVectorImport();
+      }
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown')
+      {
+        e.preventDefault();
+
+        const nudge = e.shiftKey ? 10 : 1;
+
+        if (e.key === 'ArrowLeft')  nbImport.x -= nudge;
+        if (e.key === 'ArrowRight') nbImport.x += nudge;
+        if (e.key === 'ArrowUp')    nbImport.y -= nudge;
+        if (e.key === 'ArrowDown')  nbImport.y += nudge;
+
+        redrawNotebookPage(nbImport.pageIndex);
+      }
+
+      return;
+    }
 
     if ((e.key === 'Delete' || e.key === 'Backspace') && nbSelection.length)
     {
@@ -8363,6 +8471,18 @@ function notebookEraseAt(pt, active)
 
   page.strokes.forEach(function(stroke)
   {
+    // Filled strokes (SVG import fills) erase as whole objects: splitting a
+    // fill outline into open fragments has no meaningful rendering.
+    if (stroke.fill)
+    {
+      const hit = stroke.points.some(function(p){ return Math.hypot(p.x - pt.x, p.y - pt.y) <= r; });
+
+      if (!hit)
+        newStrokes.push(stroke);
+
+      return;
+    }
+
     const segments = [[]];
 
     stroke.points.forEach(function(p)
@@ -8397,6 +8517,25 @@ function notebookPointerDown(e, canvas, pageIndex)
 
   const pt = notebookCanvasPoint(e, canvas);
   nbCurrentPage = pageIndex;
+
+  // A pending vector import captures all pointer input on its page: dragging
+  // repositions it, the bottom-right handle resizes it, and normal tools stay
+  // disabled until the import is accepted or cancelled.
+  if (nbImport)
+  {
+    if (pageIndex !== nbImport.pageIndex)
+      return;
+
+    const hx = nbImport.x + nbImport.w * nbImport.scale + 6,
+          hy = nbImport.y + nbImport.h * nbImport.scale + 6;
+
+    if (Math.abs(pt.x - hx) <= 12 && Math.abs(pt.y - hy) <= 12)
+      nbActive = { kind: 'import-scale', pageIndex: pageIndex };
+    else
+      nbActive = { kind: 'import-move', pageIndex: pageIndex, start: pt };
+
+    return;
+  }
 
   // Map pages: route to map tool handler first; fall through to drawing tools if not consumed.
   const _mapPage = nbData.pages[pageIndex];
@@ -8504,6 +8643,21 @@ function notebookPointerMove(e, canvas, pageIndex)
     nbActive.x2 = pt.x;
     nbActive.y2 = pt.y;
     nbSelection = notebookItemsInRect(nbData.pages[pageIndex], nbActive);
+    redrawNotebookPage(pageIndex);
+  }
+  else if (nbActive.kind === 'import-move')
+  {
+    nbImport.x += pt.x - nbActive.start.x;
+    nbImport.y += pt.y - nbActive.start.y;
+    nbActive.start = pt;
+    redrawNotebookPage(pageIndex);
+  }
+  else if (nbActive.kind === 'import-scale')
+  {
+    // Scale so the corner handle tracks the pointer, anchored at the top-left.
+    const s = Math.max((pt.x - nbImport.x) / nbImport.w, (pt.y - nbImport.y) / nbImport.h);
+
+    nbImport.scale = Math.max(0.05, Math.min(20, s));
     redrawNotebookPage(pageIndex);
   }
   else if (nbActive.kind === 'move')
@@ -8622,6 +8776,529 @@ async function handleNotebookPdfImport(e)
     console.warn('PDF import error', err);
     alert('Could not import that PDF.');
   }
+}
+
+// ── SVG vector import ──
+
+function triggerNotebookVectorImport()
+{
+  document.getElementById('notebook-svg-input').click();
+}
+
+async function handleNotebookVectorImport(e)
+{
+  const file = e.target.files[0];
+  e.target.value = '';
+
+  if (!file || !nbData)
+    return;
+
+  const text = await file.text(),
+        converted = convertSvgToNotebookStrokes(text);
+
+  if (!converted || !converted.strokes.length)
+  {
+    alert('No drawable vector shapes were found in that SVG.');
+    return;
+  }
+
+  const page = nbData.pages[nbCurrentPage],
+        // Start at a comfortable size: natural size when it fits, otherwise
+        // shrunk to at most ~70% of the page.
+        scale = Math.min(1, (page.width * 0.7) / converted.w, (page.height * 0.7) / converted.h);
+
+  nbImport = {
+    pageIndex: nbCurrentPage,
+    strokes: converted.strokes,
+    w: converted.w,
+    h: converted.h,
+    scale: scale,
+    x: (page.width - converted.w * scale) / 2,
+    y: (page.height - converted.h * scale) / 2
+  };
+
+  document.getElementById('nb-import-bar').style.display = 'flex';
+  redrawNotebookPage(nbCurrentPage);
+}
+
+// Parses an SVG path's `d` into flattened polyline runs (one per subpath),
+// evaluating lines and quadratic/cubic curves directly. The DOM alternative,
+// getPointAtLength, re-walks the whole segment list on every call, which
+// turns dense sampling of big paths (Excalidraw freedraw exports easily
+// reach hundreds of curve segments each) quadratic - tens of seconds for a
+// large drawing - while direct evaluation keeps the import linear.
+// Returns null for anything it doesn't cover (arcs, malformed data), so the
+// caller can fall back to the slow-but-complete DOM sampler.
+function flattenSvgPathData(d)
+{
+  const tokens = d.match(/[A-Za-z]|-?(?:\d*\.\d+|\d+\.?)(?:[eE][+-]?\d+)?/g);
+
+  if (!tokens || !tokens.length)
+    return null;
+
+  const runs = [];
+
+  let run = null,
+      i = 0,
+      cx = 0, cy = 0,       // current point
+      sx = 0, sy = 0,       // subpath start (Z closes back to it)
+      pcx = null, pcy = null, // previous curve control point (S/T reflection)
+      prevCmd = '';
+
+  function num()
+  {
+    const v = parseFloat(tokens[i++]);
+    return isFinite(v) ? v : NaN;
+  }
+
+  function quadTo(qx, qy, x, y)
+  {
+    const x0 = cx, y0 = cy;
+
+    for (let t = 1; t <= 8; t++)
+    {
+      const u = t / 8, v = 1 - u;
+      run.push({ x: v * v * x0 + 2 * v * u * qx + u * u * x, y: v * v * y0 + 2 * v * u * qy + u * u * y });
+    }
+
+    cx = x; cy = y; pcx = qx; pcy = qy;
+  }
+
+  function cubicTo(x1, y1, x2, y2, x, y)
+  {
+    const x0 = cx, y0 = cy;
+
+    for (let t = 1; t <= 10; t++)
+    {
+      const u = t / 10, v = 1 - u;
+      run.push
+      (
+        {
+          x: v * v * v * x0 + 3 * v * v * u * x1 + 3 * v * u * u * x2 + u * u * u * x,
+          y: v * v * v * y0 + 3 * v * v * u * y1 + 3 * v * u * u * y2 + u * u * u * y
+        }
+      );
+    }
+
+    cx = x; cy = y; pcx = x2; pcy = y2;
+  }
+
+  while (i < tokens.length)
+  {
+    let cmd = tokens[i];
+
+    if (/^[A-Za-z]$/.test(cmd))
+      i++;
+    else
+      cmd = (prevCmd === 'M') ? 'L' : (prevCmd === 'm') ? 'l' : prevCmd; // implicit command repetition
+
+    const rel = (cmd >= 'a');
+    let x, y, x1, y1, x2, y2;
+
+    if (!run && cmd !== 'M' && cmd !== 'm')
+      return null; // drawing command before any moveto
+
+    switch (cmd)
+    {
+      case 'M': case 'm':
+        x = num(); y = num();
+        if (rel) { x += cx; y += cy; }
+        if (run && run.length > 1) runs.push(run);
+        run = [{ x: x, y: y }];
+        cx = sx = x; cy = sy = y; pcx = pcy = null;
+        break;
+
+      case 'L': case 'l':
+        x = num(); y = num();
+        if (rel) { x += cx; y += cy; }
+        run.push({ x: x, y: y }); cx = x; cy = y; pcx = pcy = null;
+        break;
+
+      case 'H': case 'h':
+        x = num(); if (rel) x += cx;
+        run.push({ x: x, y: cy }); cx = x; pcx = pcy = null;
+        break;
+
+      case 'V': case 'v':
+        y = num(); if (rel) y += cy;
+        run.push({ x: cx, y: y }); cy = y; pcx = pcy = null;
+        break;
+
+      case 'Q': case 'q':
+        x1 = num(); y1 = num(); x = num(); y = num();
+        if (rel) { x1 += cx; y1 += cy; x += cx; y += cy; }
+        quadTo(x1, y1, x, y);
+        break;
+
+      case 'T': case 't':
+        x = num(); y = num();
+        if (rel) { x += cx; y += cy; }
+        x1 = (pcx === null || !/^[QqTt]$/.test(prevCmd)) ? cx : 2 * cx - pcx;
+        y1 = (pcy === null || !/^[QqTt]$/.test(prevCmd)) ? cy : 2 * cy - pcy;
+        quadTo(x1, y1, x, y);
+        break;
+
+      case 'C': case 'c':
+        x1 = num(); y1 = num(); x2 = num(); y2 = num(); x = num(); y = num();
+        if (rel) { x1 += cx; y1 += cy; x2 += cx; y2 += cy; x += cx; y += cy; }
+        cubicTo(x1, y1, x2, y2, x, y);
+        break;
+
+      case 'S': case 's':
+        x2 = num(); y2 = num(); x = num(); y = num();
+        if (rel) { x2 += cx; y2 += cy; x += cx; y += cy; }
+        x1 = (pcx === null || !/^[CcSs]$/.test(prevCmd)) ? cx : 2 * cx - pcx;
+        y1 = (pcy === null || !/^[CcSs]$/.test(prevCmd)) ? cy : 2 * cy - pcy;
+        cubicTo(x1, y1, x2, y2, x, y);
+        break;
+
+      case 'Z': case 'z':
+        if (!run || (i < tokens.length && !/^[A-Za-z]$/.test(tokens[i])))
+          return null; // numbers after Z aren't valid - bail rather than loop
+        run.push({ x: sx, y: sy }); cx = sx; cy = sy; pcx = pcy = null;
+        break;
+
+      default:
+        return null; // arcs and anything unrecognized use the DOM sampler
+    }
+
+    if (!run || isNaN(cx) || isNaN(cy))
+      return null;
+
+    prevCmd = cmd;
+  }
+
+  if (run && run.length > 1)
+    runs.push(run);
+
+  return runs.length ? runs : null;
+}
+
+// Thins a polyline to roughly evenly spaced points at least 1.5 units apart
+// (and at most maxPoints total), always preserving the endpoints.
+function thinRunByArcLength(run, maxPoints)
+{
+  if (run.length < 3)
+    return run;
+
+  let len = 0;
+
+  for (let i = 1; i < run.length; i++)
+    len += Math.hypot(run[i].x - run[i - 1].x, run[i].y - run[i - 1].y);
+
+  const step = Math.max(1.5, len / maxPoints),
+        out = [run[0]];
+
+  let acc = 0;
+
+  for (let i = 1; i < run.length - 1; i++)
+  {
+    acc += Math.hypot(run[i].x - run[i - 1].x, run[i].y - run[i - 1].y);
+
+    if (acc >= step)
+    {
+      out.push(run[i]);
+      acc = 0;
+    }
+  }
+
+  out.push(run[run.length - 1]);
+  return out;
+}
+
+// Converts SVG markup into notebook pen strokes. Every geometry element
+// (path, line, rect, circle, ellipse, polyline, polygon) is sampled along its
+// outline with getPointAtLength and mapped through its cumulative transform,
+// so the result is plain point lists in a common coordinate space - exactly
+// the {points:[{x,y,w}]} shape the notebook's own pen produces, which is what
+// lets the import render/erase/select like hand-drawn ink afterwards.
+// Filled geometry additionally becomes fill:true strokes whose points trace
+// the shape's outline(s), with `breaks` marking subpath starts - the renderer
+// paints those as even-odd filled polygons, which is what keeps solid-color
+// art (e.g. Excalidraw exports, where even pen strokes and text are filled
+// paths) looking like the browser's rendering instead of hollow outlines.
+// Returns { strokes, w, h } with points normalized so their bounds start at
+// (0,0), or null if the markup isn't parseable SVG.
+function convertSvgToNotebookStrokes(svgText)
+{
+  const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+
+  if (doc.querySelector('parsererror') || !doc.documentElement || doc.documentElement.nodeName.toLowerCase() !== 'svg')
+    return null;
+
+  // The SVG has to actually be laid out in the live document for the geometry
+  // APIs (getTotalLength / getPointAtLength / getScreenCTM) to work, so it's
+  // parked far off-screen for the duration of the conversion.
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:-100000px;top:0;pointer-events:none;';
+
+  const svgEl = document.importNode(doc.documentElement, true);
+  host.appendChild(svgEl);
+  document.body.appendChild(host);
+
+  try
+  {
+    const rootCTM = svgEl.getScreenCTM();
+
+    if (!rootCTM)
+      return null;
+
+    const rootInv = rootCTM.inverse(),
+          strokes = [],
+          MAX_ELEMENTS = 2000,
+          MAX_POINTS_PER_ELEMENT = 600,
+          round = function(v){ return Math.round(v * 100) / 100; };
+
+    let els = Array.prototype.slice.call(svgEl.querySelectorAll('path,line,rect,circle,ellipse,polyline,polygon'));
+
+    if (els.length > MAX_ELEMENTS)
+      els = els.slice(0, MAX_ELEMENTS);
+
+    // Phase 1: resolve each element's effective style and transform up front,
+    // keeping the later geometry work free of layout queries.
+    const jobs = [];
+
+    els.forEach(function(el)
+    {
+      if (typeof el.getTotalLength !== 'function')
+        return;
+
+      const cs = getComputedStyle(el);
+
+      if (cs.display === 'none' || cs.visibility === 'hidden')
+        return;
+
+      const ctm = el.getScreenCTM();
+
+      if (!ctm)
+        return;
+
+      const m = rootInv.multiply(ctm),
+            // Determinant-based estimate of the transform's uniform scale, so
+            // stroke widths survive scaled/nested groups reasonably.
+            mScale = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)) || 1;
+
+      const tag = el.nodeName.toLowerCase(),
+            fillColor = (cs.fill && cs.fill !== 'none' && tag !== 'line') ? cs.fill : null,
+            strokeColor = (cs.stroke && cs.stroke !== 'none') ? cs.stroke : null;
+
+      if (!fillColor && !strokeColor)
+        return;
+
+      jobs.push({
+        el: el,
+        m: m,
+        width: Math.max(0.5, (parseFloat(cs.strokeWidth) || 1) * mScale),
+        fillColor: fillColor,
+        fillRule: cs.fillRule,
+        strokeColor: strokeColor
+      });
+    });
+
+    // Phase 2: turn each element into local-space polyline runs, one per
+    // subpath - separate runs are what keep glyph holes and disjoint pieces
+    // from getting connected. Paths flatten analytically (see
+    // flattenSvgPathData for why the DOM sampling APIs are avoided);
+    // everything else - rect/circle/ellipse/line/poly*, plus the rare path
+    // with arcs - samples via getPointAtLength, which is fine for those
+    // cheap single-geometry elements.
+    jobs.forEach(function(job)
+    {
+      let rawRuns = null;
+
+      if (job.el.nodeName.toLowerCase() === 'path')
+        rawRuns = flattenSvgPathData(job.el.getAttribute('d') || '');
+
+      if (!rawRuns)
+      {
+        let len;
+        try { len = job.el.getTotalLength(); }
+        catch(err) { return; }
+
+        if (!isFinite(len) || len <= 0)
+          return;
+
+        const step = Math.max(1.5, len / MAX_POINTS_PER_ELEMENT),
+              run = [];
+
+        for (let d = 0; d < len; d += step)
+        {
+          const p = job.el.getPointAtLength(d);
+          run.push({ x: p.x, y: p.y });
+        }
+
+        const pEnd = job.el.getPointAtLength(len);
+        run.push({ x: pEnd.x, y: pEnd.y });
+        rawRuns = [run];
+      }
+
+      // Map into the root coordinate space, then thin by arc length so the
+      // dense curve flattening doesn't bloat the stored stroke data.
+      const m = job.m,
+            runs = [];
+
+      rawRuns.forEach(function(rawRun)
+      {
+        const t = rawRun.map(function(p)
+        {
+          return { x: round(m.a * p.x + m.c * p.y + m.e), y: round(m.b * p.x + m.d * p.y + m.f) };
+        });
+
+        const thinned = thinRunByArcLength(t, MAX_POINTS_PER_ELEMENT);
+
+        if (thinned.length >= 2)
+          runs.push(thinned);
+      });
+
+      if (!runs.length)
+        return;
+
+      // Fill first, outline second, so the outline paints on top just like
+      // the browser does.
+      if (job.fillColor)
+      {
+        const points = [], breaks = [];
+
+        runs.forEach(function(run)
+        {
+          if (points.length)
+            breaks.push(points.length);
+
+          run.forEach(function(p){ points.push({ x: p.x, y: p.y, w: 1 }); });
+        });
+
+        if (points.length >= 3)
+        {
+          const stroke = { tool: 'pen', fill: true, color: job.fillColor, baseWidth: 1, points: points, breaks: breaks };
+
+          if (job.fillRule === 'evenodd')
+            stroke.fillRule = 'evenodd';
+
+          strokes.push(stroke);
+        }
+      }
+
+      if (job.strokeColor)
+      {
+        runs.forEach(function(run)
+        {
+          strokes.push({
+            tool: 'pen',
+            color: job.strokeColor,
+            baseWidth: job.width,
+            points: run.map(function(p){ return { x: p.x, y: p.y, w: job.width }; })
+          });
+        });
+      }
+    });
+
+    if (!strokes.length)
+      return { strokes: [], w: 1, h: 1 };
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+    strokes.forEach(function(s)
+    {
+      s.points.forEach(function(p)
+      {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      });
+    });
+
+    strokes.forEach(function(s)
+    {
+      s.points.forEach(function(p) { p.x -= minX; p.y -= minY; });
+    });
+
+    return { strokes: strokes, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
+  }
+  finally
+  {
+    document.body.removeChild(host);
+  }
+}
+
+// Bakes the pending import into the page: placement offset/scale are applied
+// to every point, then the strokes join page.strokes as ordinary pen ink
+// (undoable, erasable, selectable, saved with the file).
+function acceptNotebookVectorImport()
+{
+  if (!nbImport || !nbData)
+    return;
+
+  const imp = nbImport,
+        page = nbData.pages[imp.pageIndex];
+
+  if (!page)
+  {
+    cancelNotebookVectorImport();
+    return;
+  }
+
+  notebookSnapshotForUndo(imp.pageIndex);
+
+  imp.strokes.forEach(function(s)
+  {
+    const stroke = {
+      tool: s.tool,
+      color: s.color,
+      baseWidth: Math.max(0.5, s.baseWidth * imp.scale),
+      points: s.points.map(function(p)
+      {
+        return {
+          x: imp.x + p.x * imp.scale,
+          y: imp.y + p.y * imp.scale,
+          w: Math.max(0.5, (p.w || s.baseWidth) * imp.scale)
+        };
+      })
+    };
+
+    if (s.fill)
+    {
+      stroke.fill = true;
+
+      if (s.fillRule)
+        stroke.fillRule = s.fillRule;
+
+      if (s.breaks && s.breaks.length)
+        stroke.breaks = s.breaks.slice();
+    }
+
+    page.strokes.push(stroke);
+  });
+
+  nbImport = null;
+  nbActive = null;
+  document.getElementById('nb-import-bar').style.display = 'none';
+
+  rebuildNotebookCommittedCache(imp.pageIndex);
+  commitNotebookChange();
+  redrawNotebookPage(imp.pageIndex);
+}
+
+function cancelNotebookVectorImport()
+{
+  if (!nbImport)
+    return;
+
+  const pageIndex = nbImport.pageIndex;
+
+  nbImport = null;
+  nbActive = null;
+  document.getElementById('nb-import-bar').style.display = 'none';
+  redrawNotebookPage(pageIndex);
+}
+
+function notebookVectorScaleBy(factor)
+{
+  if (!nbImport)
+    return;
+
+  nbImport.scale = Math.max(0.05, Math.min(20, nbImport.scale * factor));
+  redrawNotebookPage(nbImport.pageIndex);
 }
 
 // ── Export (composites each page to a PNG, embedded as <img> in the wrapped HTML) ──

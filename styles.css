@@ -2106,12 +2106,49 @@ html, body
 {
   color: var(--accent);
 }
-#notebook-import-pdf-btn
+#notebook-import-pdf-btn,
+#notebook-import-svg-btn
 {
   width: auto;
   padding: 0 10px;
   font-size: 12px;
   font-family: var(--sans);
+}
+#nb-import-bar
+{
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-lg);
+  padding: 6px 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  z-index: 21;
+}
+#nb-import-bar .tb-btn
+{
+  width: auto;
+  padding: 0 10px;
+  font-size: 12px;
+  font-family: var(--sans);
+  white-space: nowrap;
+}
+#nb-import-bar .nb-import-accept
+{
+  color: var(--accent);
+  font-weight: 700;
+}
+.nb-import-hint
+{
+  font-size: 11px;
+  color: var(--text3);
+  white-space: nowrap;
+  padding-right: 4px;
 }
 #notebook-pages
 {
@@ -3485,6 +3522,10 @@ mark.gs-hl
 .bst-name {
   font-size: 16px; font-weight: 700; color: var(--text);
   line-height: 1.2; letter-spacing: -.01em;
+}
+.bst-sci-name {
+  font-size: 12px; font-weight: 400; font-style: italic;
+  color: var(--text3); letter-spacing: 0; margin-left: 2px;
 }
 .bst-danger {
   display: inline-flex; align-items: center; gap: 5px;
