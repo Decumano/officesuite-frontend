@@ -7,7 +7,13 @@
 // the logged-in session, so `root` is never actually sent to it.
 
 var Platform = (function () {
-  var tauri = window.__TAURI__ && window.__TAURI__.core;
+  // The split pane embeds the app in a same-origin iframe; Tauri only injects
+  // __TAURI__ into top-level windows, so child frames borrow the parent's.
+  var tauriGlobal = window.__TAURI__ || (function () {
+    try { return window.parent !== window ? window.parent.__TAURI__ : null; }
+    catch (e) { return null; }
+  })();
+  var tauri = tauriGlobal && tauriGlobal.core;
 
   // Sentinel returned by pickWorkFolder() once authenticated: there's no
   // folder to pick on the web, just an implicit per-user workspace.

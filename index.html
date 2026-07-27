@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lore Keep</title>
-  <link rel="stylesheet" href="styles.css?v=17">
+  <link rel="stylesheet" href="styles.css?v=20">
 </head>
 <body>
   <div id="auth-gate" style="position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;background:#14161a;font-family:system-ui,sans-serif;">
@@ -135,6 +135,9 @@
     <div id="main">
       <!-- Open-file tabs (desktop only; hidden on phones via CSS) -->
       <div id="open-tabs-bar" style="display:none"></div>
+
+      <div id="editor-split">
+      <div id="apps-host">
 
       <!-- DOC APP -->
       <div id="doc-app" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
@@ -453,6 +456,7 @@
           <div class="toolbar-sep"></div>
           <input class="tb-search" id="bst-search" type="text" placeholder="Search beasts…" oninput="onBestiarySearch(this.value)">
           <select class="tb-select tb-filter" id="bst-filter-type" title="Filter by category" onchange="onBstFilterType(this.value)"></select>
+          <select class="tb-select tb-filter" id="bst-filter-world" title="Filter by world / region" onchange="onBstFilterWorld(this.value)"></select>
           <select class="tb-select tb-filter" id="bst-filter-tag" title="Filter by tag" onchange="onBstFilterTag(this.value)"></select>
           <input class="tb-search tb-file-tags" id="bst-file-tags" type="text" placeholder="File tags…" title="Tags for this file (comma separated)" oninput="onBestiaryFileTagsChange()">
           <div style="flex:1"></div>
@@ -593,8 +597,41 @@
         </div>
       </div>
 
+      </div> <!-- END APPS HOST -->
+
+      <!-- SPLIT PANE: side view of any open tab, raw text or rendered (right-click a tab) -->
+      <div id="split-divider" style="display:none" onmousedown="startSplitDrag(event)"></div>
+      <div id="split-pane" style="display:none">
+        <div id="split-pane-head">
+          <div id="split-pane-tab" draggable="true" ondragstart="onSplitTabDragStart(event)" ondragend="onTabDragEnd(event)" title="Drag to move this view — into the tab bar, another window, or out of the app">
+            <span id="split-pane-icon"></span>
+            <span id="split-pane-name"></span>
+          </div>
+          <div style="flex:1"></div>
+          <div class="view-toggle">
+            <button class="view-btn" id="split-btn-raw" onclick="setSplitMode('raw')" title="Raw text"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/></svg></button>
+            <button class="view-btn" id="split-btn-rendered" onclick="setSplitMode('rendered')" title="Rendered view"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          </div>
+          <button class="tb-btn" id="split-detach-btn" title="Move to a separate window" onclick="detachSplitPane()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/><path d="M14 3h7v7"/><line x1="21" y1="3" x2="11" y2="13"/></svg></button>
+          <button class="tb-btn" id="split-close-btn" title="Close split view" onclick="closeSplitPane()">×</button>
+        </div>
+        <div id="split-pane-body">
+          <textarea id="split-raw" readonly spellcheck="false" style="display:none"></textarea>
+          <div id="split-rendered" style="display:none"></div>
+          <iframe id="split-embed" style="display:none" title="Embedded editor"></iframe>
+        </div>
+      </div>
+
+      <!-- Half-screen highlights shown while a dragged tab hovers an edge -->
+      <div id="split-hint-left" class="split-drop-hint"></div>
+      <div id="split-hint-right" class="split-drop-hint"></div>
+      </div> <!-- END EDITOR SPLIT -->
+
     </div>
   </div>
+
+  <!-- Right-click menu for the open-file tabs -->
+  <div id="tab-context-menu" class="context-menu"></div>
 
   <!-- NEW MODAL -->
   <div class="modal-overlay" id="new-modal">
@@ -861,6 +898,18 @@
         <div id="settings-type-toggles" class="settings-type-toggles"></div>
       </div>
       <div class="settings-section">
+        <div class="settings-field-label">Spelling</div>
+        <p class="settings-help-text">Uses the spell checker built into your system, so suggestions come from the
+          dictionaries installed on this device. Pick a language to check against, or leave it on your system default.</p>
+        <div class="settings-spell-row">
+          <label class="settings-type-toggle">
+            <input type="checkbox" id="settings-spell-enabled" onchange="onSpellPrefsChange()">
+            <span>Check spelling as you type</span>
+          </label>
+          <select class="tb-select" id="settings-spell-lang" title="Spell-check language" onchange="onSpellPrefsChange()"></select>
+        </div>
+      </div>
+      <div class="settings-section">
         <div class="settings-field-label">Appearance</div>
         <p class="settings-help-text">Pick a color combination, or set your own background and accent colors.</p>
         <div id="settings-theme-presets" class="settings-theme-presets"></div>
@@ -975,7 +1024,7 @@
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/chart.umd.js"></script>
-  <script type="text/javascript" src="platform.js?v=17"></script>
+  <script type="text/javascript" src="platform.js?v=20"></script>
   <!-- Shared-file banner (fixed, web only) -->
   <div id="view-only-banner" style="display:none"></div>
 
@@ -1033,7 +1082,7 @@
     </div>
   </div>
 
-  <script type="text/javascript" src="auth-gate.js?v=17"></script>
+  <script type="text/javascript" src="auth-gate.js?v=20"></script>
 
   <!-- TRAVEL DETAIL POPOVER -->
   <div id="travel-popover" style="display:none;position:fixed;z-index:901;min-width:300px;max-width:360px;">
