@@ -3256,6 +3256,37 @@ mark.gs-hl
 .settings-modal-body::-webkit-scrollbar { width: 4px; }
 .settings-modal-body::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 4px; }
 .settings-section { margin-bottom: 20px; }
+
+.settings-workspaces-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.settings-workspace-row { display: flex; align-items: stretch; gap: 4px; }
+.settings-workspace-main {
+  flex: 1 1 auto; min-width: 0; text-align: left;
+  display: flex; flex-direction: column; gap: 2px;
+  color: var(--text); cursor: pointer;
+  background: var(--bg2); border: 1px solid var(--border2);
+  border-radius: var(--radius); padding: 6px 10px;
+  font-family: var(--sans);
+  transition: border-color .12s, background .12s;
+}
+.settings-workspace-main:hover { border-color: var(--accent); background: var(--bg3); }
+.settings-workspace-row.active .settings-workspace-main { border-color: var(--accent); }
+.settings-workspace-name { font-size: 13px; font-weight: 600; }
+.settings-workspace-badge {
+  color: var(--accent); font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; margin-left: 6px;
+}
+.settings-workspace-path {
+  font-size: 11px; color: var(--text2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.settings-workspace-action {
+  flex: 0 0 auto; cursor: pointer;
+  background: none; border: 1px solid var(--border2);
+  border-radius: var(--radius); color: var(--text2); padding: 0 9px;
+  transition: border-color .12s, color .12s;
+}
+.settings-workspace-action:hover { color: var(--text); border-color: var(--accent); }
+
 .settings-type-toggles {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px;
 }

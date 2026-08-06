@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lore Keep</title>
-  <link rel="stylesheet" href="styles.css?v=20">
+  <link rel="stylesheet" href="styles.css?v=21">
 </head>
 <body>
   <div id="auth-gate" style="position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;background:#14161a;font-family:system-ui,sans-serif;">
@@ -616,7 +616,7 @@
           <button class="tb-btn" id="split-close-btn" title="Close split view" onclick="closeSplitPane()">×</button>
         </div>
         <div id="split-pane-body">
-          <textarea id="split-raw" readonly spellcheck="false" style="display:none"></textarea>
+          <textarea id="split-raw" spellcheck="false" style="display:none" oninput="onSplitRawInput()"></textarea>
           <div id="split-rendered" style="display:none"></div>
           <iframe id="split-embed" style="display:none" title="Embedded editor"></iframe>
         </div>
@@ -860,15 +860,17 @@
       <h3>Settings</h3>
       <div class="settings-modal-body">
       <div class="settings-section">
-        <div class="settings-field-label">Work folder</div>
+        <div class="settings-field-label">Work folder &amp; workspaces</div>
         <p class="settings-help-text">
           By default, files are stored in this browser. Choose a folder to store files as real
           <code>.mdp</code>/<code>.mds</code>/<code>.mdg</code>/<code>.mdn</code>/<code>.mdl</code>/<code>.mdc</code>/<code>.mde</code>
-          files instead, organized into folders you create yourself.
+          files instead, organized into folders you create yourself. Each folder you choose is saved
+          as a named workspace, and you can switch between them here.
         </p>
         <div class="settings-folder-row">
           <span id="settings-folder-path" class="settings-folder-path">This browser (no folder set)</span>
         </div>
+        <div id="settings-workspaces-list" class="settings-workspaces-list" style="display:none;"></div>
       </div>
       <div class="settings-section" id="cloud-sync-section" style="display:none;">
         <div class="settings-field-label">Cloud Sync</div>
@@ -1024,7 +1026,7 @@
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/chart.umd.js"></script>
-  <script type="text/javascript" src="platform.js?v=20"></script>
+  <script type="text/javascript" src="platform.js?v=21"></script>
   <!-- Shared-file banner (fixed, web only) -->
   <div id="view-only-banner" style="display:none"></div>
 
@@ -1082,7 +1084,7 @@
     </div>
   </div>
 
-  <script type="text/javascript" src="auth-gate.js?v=20"></script>
+  <script type="text/javascript" src="auth-gate.js?v=21"></script>
 
   <!-- TRAVEL DETAIL POPOVER -->
   <div id="travel-popover" style="display:none;position:fixed;z-index:901;min-width:300px;max-width:360px;">
