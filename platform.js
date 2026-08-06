@@ -19,6 +19,36 @@ var Platform = (function () {
   // folder to pick on the web, just an implicit per-user workspace.
   var CLOUD_ROOT = 'cloud';
 
+  // ── Cloud workspaces (web only) ──
+  // A named workspace on the web is just a top-level folder of the user's one
+  // server-side space, addressed with the root sentinel 'cloud:<folder>'.
+  // Scoping is applied here, in the single funnel every API call goes
+  // through: work-folder methods derive the folder from their `root`
+  // argument; share/comment methods don't receive a root, so main.js tells
+  // us the active folder once via setCloudWorkspace. The server only ever
+  // sees full root-relative paths, so sync, sharing and deletion tombstones
+  // work unchanged.
+  var cloudWorkspaceFolder = '';
+
+  function setCloudWorkspace(folder) {
+    cloudWorkspaceFolder = folder || '';
+  }
+
+  function cloudFolderOf(root) {
+    return (typeof root === 'string' && root.indexOf('cloud:') === 0) ? root.slice(6) : '';
+  }
+
+  // Workspace-relative -> root-relative, for methods that take `root`.
+  function cloudRel(root, relPath) {
+    var folder = cloudFolderOf(root);
+    return folder ? folder + '/' + relPath : relPath;
+  }
+
+  // Same, for the share/comment methods scoped via setCloudWorkspace.
+  function activeRel(relPath) {
+    return cloudWorkspaceFolder ? cloudWorkspaceFolder + '/' + relPath : relPath;
+  }
+
   function api(path, options) {
     options = options || {};
     options.credentials = 'include';
@@ -45,17 +75,38 @@ var Platform = (function () {
 
   function listWorkFolder(root) {
     if (tauri) return tauri.invoke('list_work_folder', { root: root });
-    return apiJson('/workspace');
+    return apiJson('/workspace').then(function (tree) {
+      var folder = cloudFolderOf(root);
+      if (!folder) return tree;
+
+      // Scoped workspace: present the named top-level folder's contents as
+      // the whole tree, with workspace-relative paths.
+      var node = null;
+      (tree || []).forEach(function (e) {
+        if (e.isDir && e.name === folder) node = e;
+      });
+      if (!node) return [];
+
+      var strip = folder.length + 1;
+      function stripRel(list) {
+        list.forEach(function (e) {
+          e.relPath = e.relPath.slice(strip);
+          if (e.children && e.children.length) stripRel(e.children);
+        });
+        return list;
+      }
+      return stripRel(node.children || []);
+    });
   }
 
   function readWorkFile(root, relPath) {
     if (tauri) return tauri.invoke('read_work_file', { root: root, relPath: relPath });
-    return api('/workspace/file?path=' + encodeURIComponent(relPath)).then(function (res) { return res.text(); });
+    return api('/workspace/file?path=' + encodeURIComponent(cloudRel(root, relPath))).then(function (res) { return res.text(); });
   }
 
   function writeWorkFile(root, relPath, content) {
     if (tauri) return tauri.invoke('write_work_file', { root: root, relPath: relPath, content: content });
-    return api('/workspace/file?path=' + encodeURIComponent(relPath), {
+    return api('/workspace/file?path=' + encodeURIComponent(cloudRel(root, relPath)), {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: content
@@ -67,7 +118,7 @@ var Platform = (function () {
   // desktop app has its own explicit cloud-sync flow).
   function statWorkFile(root, relPath) {
     if (tauri) return Promise.resolve(null);
-    return apiJson('/workspace/stat?path=' + encodeURIComponent(relPath));
+    return apiJson('/workspace/stat?path=' + encodeURIComponent(cloudRel(root, relPath)));
   }
 
   function createWorkFolder(root, relPath) {
@@ -75,13 +126,13 @@ var Platform = (function () {
     return api('/workspace/folder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ relPath: relPath })
+      body: JSON.stringify({ relPath: cloudRel(root, relPath) })
     }).then(function () { return undefined; });
   }
 
   function deleteWorkEntry(root, relPath, isDir) {
     if (tauri) return tauri.invoke('delete_work_entry', { root: root, relPath: relPath, isDir: isDir });
-    return api('/workspace/entry?path=' + encodeURIComponent(relPath) + '&isDir=' + !!isDir, {
+    return api('/workspace/entry?path=' + encodeURIComponent(cloudRel(root, relPath)) + '&isDir=' + !!isDir, {
       method: 'DELETE'
     }).then(function () { return undefined; });
   }
@@ -91,7 +142,7 @@ var Platform = (function () {
     return api('/workspace/move', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: fromRelPath, to: toRelPath })
+      body: JSON.stringify({ from: cloudRel(root, fromRelPath), to: cloudRel(root, toRelPath) })
     }).then(function () { return undefined; });
   }
 
@@ -167,13 +218,13 @@ var Platform = (function () {
     return apiJson('/shares', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ relPath: relPath, isDir: isDir, email: email, permission: permission })
+      body: JSON.stringify({ relPath: activeRel(relPath), isDir: isDir, email: email, permission: permission })
     });
   }
 
   function listSharesFor(relPath) {
     if (tauri) return Promise.resolve([]);
-    return apiJson('/shares?path=' + encodeURIComponent(relPath));
+    return apiJson('/shares?path=' + encodeURIComponent(activeRel(relPath)));
   }
 
   function revokeShare(shareId) {
@@ -218,13 +269,13 @@ var Platform = (function () {
     return apiJson('/links', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ relPath: relPath, isDir: isDir, permission: permission })
+      body: JSON.stringify({ relPath: activeRel(relPath), isDir: isDir, permission: permission })
     });
   }
 
   function listShareLinks(relPath) {
     if (tauri) return Promise.resolve([]);
-    return apiJson('/links?path=' + encodeURIComponent(relPath));
+    return apiJson('/links?path=' + encodeURIComponent(activeRel(relPath)));
   }
 
   function revokeShareLink(linkId) {
@@ -267,7 +318,7 @@ var Platform = (function () {
   function commentQs(target) {
     if (target.link) return 'link=' + encodeURIComponent(target.link) + '&subPath=' + encodeURIComponent(target.subPath || '');
     if (target.share) return 'share=' + encodeURIComponent(target.share) + '&subPath=' + encodeURIComponent(target.subPath || '');
-    return 'path=' + encodeURIComponent(target.path);
+    return 'path=' + encodeURIComponent(activeRel(target.path));
   }
 
   function listComments(target) {
@@ -281,7 +332,7 @@ var Platform = (function () {
       ? { link: target.link, subPath: target.subPath || '', body: body }
       : target.share
         ? { share: target.share, subPath: target.subPath || '', body: body }
-        : { path: target.path, body: body };
+        : { path: activeRel(target.path), body: body };
     if (anchor) payload.anchor = anchor;
     return apiJson('/comments', {
       method: 'POST',
@@ -410,6 +461,7 @@ var Platform = (function () {
 
   return {
     isNative: !!tauri,
+    setCloudWorkspace: setCloudWorkspace,
     pickWorkFolder: pickWorkFolder,
     listWorkFolder: listWorkFolder,
     readWorkFile: readWorkFile,

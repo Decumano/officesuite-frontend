@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lore Keep</title>
-  <link rel="stylesheet" href="styles.css?v=21">
+  <link rel="stylesheet" href="styles.css?v=22">
 </head>
 <body>
   <div id="auth-gate" style="position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;background:#14161a;font-family:system-ui,sans-serif;">
@@ -943,7 +943,7 @@
       </div>
       <div class="modal-actions">
         <button class="btn-cancel" id="settings-stop-btn" onclick="stopUsingWorkFolder()" style="display:none;">Stop using this folder</button>
-        <button class="btn-create" onclick="chooseWorkFolder()">Choose Folder&hellip;</button>
+        <button class="btn-create" id="settings-folder-btn" onclick="onSettingsFolderButton()">Choose Folder&hellip;</button>
         <button class="btn-cancel" onclick="closeSettingsModal()">Close</button>
       </div>
     </div>
@@ -1026,7 +1026,7 @@
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/chart.umd.js"></script>
-  <script type="text/javascript" src="platform.js?v=21"></script>
+  <script type="text/javascript" src="platform.js?v=22"></script>
   <!-- Shared-file banner (fixed, web only) -->
   <div id="view-only-banner" style="display:none"></div>
 
@@ -1084,7 +1084,7 @@
     </div>
   </div>
 
-  <script type="text/javascript" src="auth-gate.js?v=21"></script>
+  <script type="text/javascript" src="auth-gate.js?v=22"></script>
 
   <!-- TRAVEL DETAIL POPOVER -->
   <div id="travel-popover" style="display:none;position:fixed;z-index:901;min-width:300px;max-width:360px;">
