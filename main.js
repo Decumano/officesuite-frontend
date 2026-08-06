@@ -160,6 +160,7 @@ let historyDiffIndex = null;
 let graphEditorView = 'split';
 
 let workFolderRoot = null;
+let workspaces = []; // [{ name, root }] - saved work folders the user can switch between
 let folders = {};
 let expandedFolders = new Set();
 let draggedEntryId = null;
@@ -255,8 +256,12 @@ async function init()
   initSplitView();
   renderFileList();
 
-  if (Object.keys(files).length === 0 && !linkToken)
+  // First run only (per browser/install): an empty list later on means the
+  // user deleted everything, and recreating the welcome file would make it
+  // look like it resurrects itself.
+  if (Object.keys(files).length === 0 && !linkToken && !localStorage.getItem('lk_welcomed'))
   {
+    try { localStorage.setItem('lk_welcomed', '1'); } catch(e) {}
     createDefaultFile();
   }
 
@@ -289,6 +294,17 @@ function loadFromStorage()
   }
 }
 
+// Default display name for a workspace: the folder's basename ("cloud" is the
+// web build's sentinel root, which has no path to take a name from).
+function workspaceNameFromRoot(root)
+{
+  if (root === 'cloud')
+    return 'Cloud workspace';
+
+  var parts = String(root).split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(root);
+}
+
 function loadSettings()
 {
   try
@@ -298,12 +314,22 @@ function loadSettings()
 
     workFolderRoot = settings.workFolder || null;
 
+    workspaces = Array.isArray(settings.workspaces)
+      ? settings.workspaces.filter(function(w) { return w && w.root && w.name; })
+      : [];
+
+    // Installs that predate named workspaces have an active folder but no
+    // list: adopt it so it shows up (and stays switchable) in Settings.
+    if (workFolderRoot && !workspaces.some(function(w) { return w.root === workFolderRoot; }))
+      workspaces.push({ name: workspaceNameFromRoot(workFolderRoot), root: workFolderRoot });
+
     if (settings.spell)
       spellPrefs = { enabled: settings.spell.enabled !== false, lang: settings.spell.lang || '' };
   }
   catch(e)
   {
     workFolderRoot = null;
+    workspaces = [];
   }
 }
 
@@ -311,7 +337,7 @@ function saveSettings()
 {
   try
   {
-    localStorage.setItem('lore_keep_settings', JSON.stringify({ workFolder: workFolderRoot, spell: spellPrefs }));
+    localStorage.setItem('lore_keep_settings', JSON.stringify({ workFolder: workFolderRoot, workspaces: workspaces, spell: spellPrefs }));
   }
   catch(e)
   {
@@ -1458,69 +1484,57 @@ async function renderSplitPane()
   var rawEl = document.getElementById('split-raw'),
       renEl = document.getElementById('split-rendered');
 
-  // Rendered mode: documents use the fast marked path; every other type gets
-  // the real app view through an embedded chrome-less instance (?embed=), so
-  // sheets, notebooks and the data apps look exactly like the main editor.
-  var useEmbed = !raw && f.type !== 'doc';
+  // Rendered mode: every type - documents included - gets the real app view
+  // through an embedded chrome-less instance (?embed=), so the side pane is a
+  // fully editable editor rather than a read-only preview.
+  var useEmbed = !raw;
 
   rawEl.style.display   = raw ? '' : 'none';
-  renEl.style.display   = (!raw && !useEmbed) ? '' : 'none';
+  renEl.style.display   = 'none';
   embedEl.style.display = useEmbed ? '' : 'none';
 
   if (raw)
   {
-    rawEl.value = f.content || '';
+    // Refreshing while the user is typing here would clobber the caret
+    if (document.activeElement !== rawEl)
+      rawEl.value = f.content || '';
     return;
   }
 
-  if (useEmbed)
+  if (embedEl.getAttribute('data-file') !== id)
   {
-    if (embedEl.getAttribute('data-file') !== id)
-    {
-      embedEl.src = 'index.html?embed=' + encodeURIComponent(id);
-      embedEl.setAttribute('data-file', id);
-    }
+    embedEl.src = 'index.html?embed=' + encodeURIComponent(id);
+    embedEl.setAttribute('data-file', id);
+  }
+}
+
+// Raw side-pane edits persist through the same funnel as the main editor.
+// The pane can hold a file other than currentFileId, so it debounces on its
+// own timer instead of scheduleSave's.
+var splitSaveTimer = null;
+
+function onSplitRawInput()
+{
+  var id = splitState.fileId,
+      f = id && files[id];
+
+  if (!f)
     return;
-  }
 
-  renEl.innerHTML = buildRenderedFileHtml(f);
-  renderMermaidDiagrams(renEl);
-  renderEmbeddedSheetCharts(renEl);
+  f.content = document.getElementById('split-raw').value;
+  f.modified = Date.now();
+  lastLocalEditAt = Date.now();
 
-  // The change-listener that persists checkbox toggles is scoped to the main
-  // preview; here they would only pretend to work.
-  renEl.querySelectorAll('input.preview-checkbox').forEach(function(cb){ cb.disabled = true; });
-}
-
-// Same reset-then-parse dance as updatePreview; the globals are re-reset on
-// every render, so borrowing them here can't corrupt the main preview.
-function splitMarkdownHtml(src)
-{
-  if (typeof marked === 'undefined')
-    return '<pre>' + escHtml(src || '') + '</pre>';
-
-  try
+  // Same document open in the main editor: keep both views in step
+  if (currentFileId === id && f.type === 'doc')
   {
-    documentHeadings = [];
-    slugCounts = {};
-    headingRenderCursor = 0;
-    checkboxRenderIndex = 0;
-
-    var tokens = marked.lexer(src || '');
-    collectHeadings(tokens);
-    return marked.parser(tokens);
+    document.getElementById('editor').value = f.content;
+    updatePreview();
+    updateStatus();
   }
-  catch(e)
-  {
-    return '<pre>' + escHtml(src || '') + '</pre>';
-  }
-}
 
-// Documents only - everything else goes through the ?embed= iframe instead.
-function buildRenderedFileHtml(f)
-{
-  return '<div class="split-view-title">' + escHtml(f.name || '') + '</div>' +
-         splitMarkdownHtml(f.content || '');
+  clearTimeout(splitSaveTimer);
+  splitSaveTimer = setTimeout(function() { persistFileEntry(id); }, 800);
 }
 
 // ── Split divider drag ──
@@ -16174,8 +16188,14 @@ var TYPE_LABELS = { doc:'Documents', sheet:'Sheets', graph:'Diagrams', notebook:
 
 function renderSettingsModal()
 {
+  var activeWs = workspaces.filter(function(w) { return w.root === workFolderRoot; })[0];
+
   document.getElementById('settings-folder-path').textContent =
-    workFolderRoot || 'This browser (no folder set)';
+    workFolderRoot
+      ? (activeWs && activeWs.name !== workFolderRoot ? activeWs.name + ' — ' + workFolderRoot : workFolderRoot)
+      : 'This browser (no folder set)';
+
+  renderWorkspacesSection();
 
   var spellEnabled = document.getElementById('settings-spell-enabled'),
       spellLang    = document.getElementById('settings-spell-lang');
@@ -16379,31 +16399,164 @@ async function chooseWorkFolder()
   if (!picked)
     return;
 
-  if (Object.keys(files).length > 0)
+  // Only browser-stored files migrate into the picked folder. When switching
+  // between folders/workspaces the in-memory files already live on disk
+  // elsewhere; migrating them again used to copy them (often as empty stubs,
+  // since work-folder content loads lazily) into every folder ever picked.
+  if (!workFolderRoot && Object.keys(files).length > 0)
+  {
     await migrateLocalStorageFilesToFolder(picked);
 
-  workFolderRoot = picked;
+    // The files now live in the folder; leaving them in localStorage would
+    // re-migrate them - as duplicates - on every future folder pick.
+    try { localStorage.removeItem('lore_keep_v2'); } catch(e) {}
+    files = {};
+  }
+
+  await activateWorkspace(picked, true);
+}
+
+// Makes `root` the active work folder, optionally registering it as a new
+// named workspace first. Everything keyed by rel-path (open file, tabs, split
+// pane, backlinks) belongs to the previous workspace and is reset.
+async function activateWorkspace(root, isNew)
+{
+  if (isNew && !workspaces.some(function(w) { return w.root === root; }))
+  {
+    var name = workspaceNameFromRoot(root);
+
+    if (Platform.isNative)
+      name = (prompt('Name this workspace:', name) || '').trim() || name;
+
+    workspaces.push({ name: name, root: root });
+  }
+
+  await flushPendingSave();
+
+  workFolderRoot = root;
   saveSettings();
 
   currentFileId = null;
+  folders = {};
   expandedFolders = new Set();
   clearActiveEditors();
+  closeSplitPane();
 
   await loadWorkFolderTree();
+  loadOpenTabs();
+  await loadBacklinksIndex();
   renderSettingsModal();
 }
 
-function stopUsingWorkFolder()
+// A pending autosave debounce still targets the previous workspace's file;
+// write it out before the switch so the last keystrokes aren't lost.
+async function flushPendingSave()
 {
+  if (saveTimer && currentFileId && files[currentFileId])
+  {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    files[currentFileId].modified = Date.now();
+    await persistFileEntry(currentFileId);
+  }
+}
+
+function switchWorkspaceAt(i)
+{
+  var ws = workspaces[i];
+
+  if (!ws || ws.root === workFolderRoot)
+    return;
+
+  activateWorkspace(ws.root, false);
+}
+
+function renameWorkspaceAt(i)
+{
+  var ws = workspaces[i];
+
+  if (!ws)
+    return;
+
+  var name = (prompt('Workspace name:', ws.name) || '').trim();
+
+  if (!name)
+    return;
+
+  ws.name = name;
+  saveSettings();
+  renderSettingsModal();
+}
+
+function forgetWorkspaceAt(i)
+{
+  var ws = workspaces[i];
+
+  if (!ws)
+    return;
+
+  if (!confirm('Remove "' + ws.name + '" from the workspace list? The folder and its files stay on disk.'))
+    return;
+
+  var wasActive = ws.root === workFolderRoot;
+
+  workspaces.splice(i, 1);
+  saveSettings();
+
+  if (wasActive)
+    stopUsingWorkFolder();
+  else
+    renderSettingsModal();
+}
+
+function renderWorkspacesSection()
+{
+  var listEl = document.getElementById('settings-workspaces-list');
+
+  if (!listEl)
+    return;
+
+  // Web: one cloud workspace per account, nothing to switch between.
+  if (!Platform.isNative)
+  {
+    listEl.style.display = 'none';
+    return;
+  }
+
+  listEl.style.display = '';
+
+  listEl.innerHTML = workspaces.length
+    ? workspaces.map(function(ws, i)
+      {
+        var active = ws.root === workFolderRoot;
+        return '<div class="settings-workspace-row' + (active ? ' active' : '') + '">' +
+          '<button type="button" class="settings-workspace-main" title="' + escAttr(ws.root) + '" onclick="switchWorkspaceAt(' + i + ')">' +
+            '<span class="settings-workspace-name">' + escHtml(ws.name) + (active ? '<span class="settings-workspace-badge">active</span>' : '') + '</span>' +
+            '<span class="settings-workspace-path">' + escHtml(ws.root) + '</span>' +
+          '</button>' +
+          '<button type="button" class="settings-workspace-action" title="Rename workspace" onclick="renameWorkspaceAt(' + i + ')">&#9998;</button>' +
+          '<button type="button" class="settings-workspace-action" title="Remove from list" onclick="forgetWorkspaceAt(' + i + ')">&times;</button>' +
+        '</div>';
+      }).join('')
+    : '<div class="settings-help-text" style="margin:0">No saved workspaces yet. Choose a folder to create one.</div>';
+}
+
+async function stopUsingWorkFolder()
+{
+  await flushPendingSave();
+
   workFolderRoot = null;
   saveSettings();
 
+  files = {};
   folders = {};
   currentFileId = null;
   expandedFolders = new Set();
   clearActiveEditors();
+  closeSplitPane();
 
   loadFromStorage();
+  loadOpenTabs();
   renderFileList();
   renderSettingsModal();
 }
