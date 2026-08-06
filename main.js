@@ -189,7 +189,13 @@ async function createDefaultFile()
 async function init()
 {
   loadSettings();
+  applyCloudWorkspaceScope();
   applySpellcheckPrefs();
+
+  // Cloud workspace names roam with the account (fire-and-forget; the
+  // settings modal re-renders when it opens, so late arrival is fine).
+  if (!Platform.isNative && workFolderRoot)
+    loadRoamingCloudWorkspaces();
 
   // ?win= (satellite window) and ?embed= (split-pane iframe) boot the same
   // app with trimmed chrome; see initSecondaryContext.
@@ -294,15 +300,31 @@ function loadFromStorage()
   }
 }
 
-// Default display name for a workspace: the folder's basename ("cloud" is the
-// web build's sentinel root, which has no path to take a name from).
+// Default display name for a workspace: the folder's basename. "cloud" is
+// the web build's whole-space sentinel; "cloud:<folder>" scopes the web app
+// to that top-level folder of the cloud space (see platform.js).
 function workspaceNameFromRoot(root)
 {
   if (root === 'cloud')
     return 'Cloud workspace';
 
+  if (String(root).indexOf('cloud:') === 0)
+    return String(root).slice(6);
+
   var parts = String(root).split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : String(root);
+}
+
+// Tells platform.js which cloud folder scopes the share/comment calls (they
+// don't take a root argument). Must run whenever workFolderRoot changes.
+function applyCloudWorkspaceScope()
+{
+  if (Platform.setCloudWorkspace)
+    Platform.setCloudWorkspace(
+      (!Platform.isNative && workFolderRoot && workFolderRoot.indexOf('cloud:') === 0)
+        ? workFolderRoot.slice(6)
+        : ''
+    );
 }
 
 function loadSettings()
@@ -322,6 +344,11 @@ function loadSettings()
     // list: adopt it so it shows up (and stays switchable) in Settings.
     if (workFolderRoot && !workspaces.some(function(w) { return w.root === workFolderRoot; }))
       workspaces.push({ name: workspaceNameFromRoot(workFolderRoot), root: workFolderRoot });
+
+    // Web: the whole-space workspace is always available to switch back to,
+    // even when the active workspace is a scoped folder.
+    if (!Platform.isNative && workFolderRoot && !workspaces.some(function(w) { return w.root === 'cloud'; }))
+      workspaces.unshift({ name: 'Cloud workspace', root: 'cloud' });
 
     if (settings.spell)
       spellPrefs = { enabled: settings.spell.enabled !== false, lang: settings.spell.lang || '' };
@@ -16188,12 +16215,17 @@ var TYPE_LABELS = { doc:'Documents', sheet:'Sheets', graph:'Diagrams', notebook:
 
 function renderSettingsModal()
 {
-  var activeWs = workspaces.filter(function(w) { return w.root === workFolderRoot; })[0];
+  var activeWs = workspaces.filter(function(w) { return w.root === workFolderRoot; })[0],
+      location = workFolderRoot ? workspaceLocationLabel(workFolderRoot) : null;
 
   document.getElementById('settings-folder-path').textContent =
     workFolderRoot
-      ? (activeWs && activeWs.name !== workFolderRoot ? activeWs.name + ' — ' + workFolderRoot : workFolderRoot)
+      ? (activeWs && activeWs.name !== location ? activeWs.name + ' — ' + location : location)
       : 'This browser (no folder set)';
+
+  var folderBtn = document.getElementById('settings-folder-btn');
+  if (folderBtn)
+    folderBtn.innerHTML = (!Platform.isNative && workFolderRoot) ? 'Add Workspace&hellip;' : 'Choose Folder&hellip;';
 
   renderWorkspacesSection();
 
@@ -16435,6 +16467,7 @@ async function activateWorkspace(root, isNew)
 
   workFolderRoot = root;
   saveSettings();
+  applyCloudWorkspaceScope();
 
   currentFileId = null;
   folders = {};
@@ -16446,6 +16479,102 @@ async function activateWorkspace(root, isNew)
   loadOpenTabs();
   await loadBacklinksIndex();
   renderSettingsModal();
+}
+
+// Web: a new workspace is a named top-level folder in the cloud space.
+// Naming an existing folder attaches to it instead of failing, so a second
+// browser (or a fresh login) can re-add the same workspaces.
+async function addCloudWorkspace()
+{
+  var name = sanitizeFileName(prompt('Name the new workspace (it becomes a folder in your cloud space):', '') || '');
+
+  if (!name)
+    return;
+
+  try
+  {
+    await Platform.createWorkFolder('cloud', name);
+  }
+  catch(e)
+  {
+    console.warn('Workspace folder create error', e);
+    alert('Could not create the workspace folder.');
+    return;
+  }
+
+  var root = 'cloud:' + name;
+
+  if (!workspaces.some(function(w) { return w.root === root; }))
+    workspaces.push({ name: name, root: root });
+
+  saveSettings();
+  persistRoamingCloudWorkspaces();
+  await activateWorkspace(root, false);
+}
+
+// The settings button doubles as "pick a folder" (desktop, or the web's
+// first-time cloud attach) and "add a cloud workspace" (web, once attached).
+function onSettingsFolderButton()
+{
+  if (!Platform.isNative && workFolderRoot)
+    addCloudWorkspace();
+  else
+    chooseWorkFolder();
+}
+
+// ── Roaming cloud workspace list (web only) ──
+// Saved in the root _lkprefs.json sidecar (always unscoped: root 'cloud'),
+// so the list follows the account across browsers and devices.
+
+async function loadRoamingCloudWorkspaces()
+{
+  var prefs;
+
+  try { prefs = JSON.parse(await Platform.readWorkFile('cloud', '_lkprefs.json')); }
+  catch(e) { return; } // no prefs stored yet (or logged out)
+
+  if (!prefs || !Array.isArray(prefs.cloudWorkspaces))
+    return;
+
+  var changed = false;
+
+  prefs.cloudWorkspaces.forEach(function(w)
+  {
+    if (!w || !w.name || !w.folder)
+      return;
+
+    var root = 'cloud:' + w.folder;
+
+    if (!workspaces.some(function(x) { return x.root === root; }))
+    {
+      workspaces.push({ name: w.name, root: root });
+      changed = true;
+    }
+  });
+
+  if (changed)
+    saveSettings();
+}
+
+function persistRoamingCloudWorkspaces()
+{
+  if (Platform.isNative)
+    return;
+
+  (async function()
+  {
+    var prefs = {};
+
+    try { prefs = JSON.parse(await Platform.readWorkFile('cloud', '_lkprefs.json')) || {}; }
+    catch(e) {}
+
+    prefs.cloudWorkspaces = workspaces
+      .filter(function(w) { return w.root.indexOf('cloud:') === 0; })
+      .map(function(w) { return { name: w.name, folder: w.root.slice(6) }; });
+
+    try { await Platform.writeWorkFile('cloud', '_lkprefs.json', JSON.stringify(prefs, null, 2)); }
+    catch(e) { console.warn('Workspace prefs write error', e); }
+  })();
 }
 
 // A pending autosave debounce still targets the previous workspace's file;
@@ -16485,6 +16614,7 @@ function renameWorkspaceAt(i)
 
   ws.name = name;
   saveSettings();
+  persistRoamingCloudWorkspaces();
   renderSettingsModal();
 }
 
@@ -16495,18 +16625,40 @@ function forgetWorkspaceAt(i)
   if (!ws)
     return;
 
-  if (!confirm('Remove "' + ws.name + '" from the workspace list? The folder and its files stay on disk.'))
+  if (ws.root === 'cloud' && !Platform.isNative)
+    return; // the whole-space workspace is the web's home base; keep it
+
+  if (!confirm('Remove "' + ws.name + '" from the workspace list? The folder and its files are kept.'))
     return;
 
   var wasActive = ws.root === workFolderRoot;
 
   workspaces.splice(i, 1);
   saveSettings();
+  persistRoamingCloudWorkspaces();
 
   if (wasActive)
-    stopUsingWorkFolder();
+  {
+    if (!Platform.isNative)
+      activateWorkspace('cloud', false); // fall back to the whole cloud space
+    else
+      stopUsingWorkFolder();
+  }
   else
     renderSettingsModal();
+}
+
+// Human-readable location line for a workspace row: a real path on desktop,
+// a friendly description of the scoped cloud folder on the web.
+function workspaceLocationLabel(root)
+{
+  if (root === 'cloud')
+    return 'Entire cloud space';
+
+  if (String(root).indexOf('cloud:') === 0)
+    return 'Cloud folder: ' + String(root).slice(6);
+
+  return root;
 }
 
 function renderWorkspacesSection()
@@ -16516,8 +16668,9 @@ function renderWorkspacesSection()
   if (!listEl)
     return;
 
-  // Web: one cloud workspace per account, nothing to switch between.
-  if (!Platform.isNative)
+  // The web hides the list until the account's cloud space is attached (the
+  // first "Choose Folder" / login flow); the desktop always shows it.
+  if (!Platform.isNative && !workFolderRoot)
   {
     listEl.style.display = 'none';
     return;
@@ -16528,14 +16681,17 @@ function renderWorkspacesSection()
   listEl.innerHTML = workspaces.length
     ? workspaces.map(function(ws, i)
       {
-        var active = ws.root === workFolderRoot;
+        var active = ws.root === workFolderRoot,
+            protectedRow = ws.root === 'cloud' && !Platform.isNative;
+
         return '<div class="settings-workspace-row' + (active ? ' active' : '') + '">' +
-          '<button type="button" class="settings-workspace-main" title="' + escAttr(ws.root) + '" onclick="switchWorkspaceAt(' + i + ')">' +
+          '<button type="button" class="settings-workspace-main" title="' + escAttr(workspaceLocationLabel(ws.root)) + '" onclick="switchWorkspaceAt(' + i + ')">' +
             '<span class="settings-workspace-name">' + escHtml(ws.name) + (active ? '<span class="settings-workspace-badge">active</span>' : '') + '</span>' +
-            '<span class="settings-workspace-path">' + escHtml(ws.root) + '</span>' +
+            '<span class="settings-workspace-path">' + escHtml(workspaceLocationLabel(ws.root)) + '</span>' +
           '</button>' +
           '<button type="button" class="settings-workspace-action" title="Rename workspace" onclick="renameWorkspaceAt(' + i + ')">&#9998;</button>' +
-          '<button type="button" class="settings-workspace-action" title="Remove from list" onclick="forgetWorkspaceAt(' + i + ')">&times;</button>' +
+          (protectedRow ? '' :
+            '<button type="button" class="settings-workspace-action" title="Remove from list" onclick="forgetWorkspaceAt(' + i + ')">&times;</button>') +
         '</div>';
       }).join('')
     : '<div class="settings-help-text" style="margin:0">No saved workspaces yet. Choose a folder to create one.</div>';
@@ -16547,6 +16703,7 @@ async function stopUsingWorkFolder()
 
   workFolderRoot = null;
   saveSettings();
+  applyCloudWorkspaceScope();
 
   files = {};
   folders = {};
